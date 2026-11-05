@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DAYSRA event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "run_id", "ts", "data"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "type": {
+      "enum": ["run_start", "host", "http", "finding", "progress", "warning", "run_end"]
+    },
+    "run_id": {"type": "string", "minLength": 1},
+    "ts": {"type": "string", "format": "date-time"},
+    "data": {"type": "object"}
+  }
+}

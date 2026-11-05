@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DAYSRA knowledge entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["template_id", "title", "meaning", "impact", "verify_steps", "concept", "lang"],
+  "properties": {
+    "template_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "meaning": {"type": "string", "minLength": 1},
+    "impact": {"type": "string", "minLength": 1},
+    "verify_steps": {"type": "array", "items": {"type": "string"}},
+    "concept": {"type": "string", "minLength": 1},
+    "lang": {"type": "string", "minLength": 1}
+  }
+}
