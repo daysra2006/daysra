@@ -102,6 +102,17 @@ class TestDbPathAndUtils:
     def test_sanitize_matched_at(self, raw_url: str, expected: str) -> None:
         assert sanitize_matched_at(raw_url) == expected
 
+    @pytest.mark.parametrize(
+        "raw_url",
+        [
+            "http://[::1",
+            "http://exa mple.com:99999",
+        ],
+    )
+    def test_sanitize_matched_at_rejects_unparseable_url(self, raw_url: str) -> None:
+        with pytest.raises(ValueError, match="invalid matched-at URL"):
+            sanitize_matched_at(raw_url)
+
 
 class TestDatabasePermissions:
     """Validate owner-only permissions for the database file, sidecars, and created directories."""

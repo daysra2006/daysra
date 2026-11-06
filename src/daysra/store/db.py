@@ -69,13 +69,24 @@ def sanitize_matched_at(raw_url: str) -> str:
     """Sanitize matched-at URL: remove userinfo (user:pass@), strip fragment,
 
     and redact query parameter values whose name contains sensitive keywords.
+    Raises ValueError when the URL cannot be parsed, so callers never store or
+    report the raw value.
     """
     if not raw_url or not raw_url.strip():
         return ""
     try:
         parts = urlsplit(raw_url.strip())
-    except ValueError:
-        return raw_url
+        # Accessing these properties validates the port range and authority;
+        # urlsplit() alone does not reject out-of-range ports.
+        hostname = parts.hostname
+        _ = parts.port
+    except ValueError as err:
+        raise ValueError(f"invalid matched-at URL: {err}") from err
+
+    if not parts.scheme or not hostname:
+        raise ValueError("invalid matched-at URL: missing scheme or host")
+    if any(ch.isspace() for ch in hostname):
+        raise ValueError("invalid matched-at URL: whitespace in host")
 
     netloc = parts.netloc
     if "@" in netloc:

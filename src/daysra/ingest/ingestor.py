@@ -246,6 +246,24 @@ class Ingestor:
                     hostname = str(event.data.get("hostname", "")).strip().lower()
 
                     if finding_id and hostname and template_id:
+                        try:
+                            clean_matched_at = sanitize_matched_at(matched_at)
+                        except ValueError as err:
+                            errors_seen += 1
+                            if len(recorded_errors) < 50:
+                                err_msg = str(err)
+                                if len(err_msg) > 300:
+                                    err_msg = err_msg[:297] + "..."
+                                recorded_errors.append(
+                                    IngestLineError(
+                                        line_number=line_no,
+                                        error_type="invalid_matched_at",
+                                        message=err_msg,
+                                        raw_preview=_sanitize_raw_preview(line),
+                                    )
+                                )
+                            continue
+
                         # Check whether host exists in hosts table without modifying hosts
                         cur = conn.cursor()
                         cur.execute("SELECT id FROM hosts WHERE hostname = ?", (hostname,))
@@ -253,7 +271,6 @@ class Ingestor:
                         if not host_row:
                             warnings_seen += 1
 
-                        clean_matched_at = sanitize_matched_at(matched_at)
                         self.db.upsert_finding(
                             conn=conn,
                             finding_id=finding_id,
