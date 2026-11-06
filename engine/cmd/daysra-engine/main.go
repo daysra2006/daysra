@@ -23,6 +23,11 @@ import (
 
 const version = "0.0.0"
 
+const (
+	initialScanBufferSize = 64 * 1024
+	maxScanTokenSize      = 4 * 1024 * 1024
+)
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -325,6 +330,7 @@ func runProbe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	var corruptLinesCount int
 
 	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, initialScanBufferSize), maxScanTokenSize)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -340,6 +346,10 @@ func runProbe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			continue
 		}
 		inScopeHosts = append(inScopeHosts, normHost)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(stderr, "probe: stdin read error: %v\n", err)
+		return 3
 	}
 
 	emitter := emit.New(runID, stdout)
@@ -402,22 +412,38 @@ func runProbe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 				return
 			}
 
-			normHost, err := normalize.Hostname(res.Hostname)
+			// 1. Validate and normalize host from res.Hostname
+			normResHost, err := normalize.Hostname(res.Hostname)
 			if err != nil {
 				corruptLinesCount++
 				return
 			}
 
-			// Post-httpx scope check: verify hostname against scope
-			if !s.Allows(normHost) {
+			// 2-6. Validate and sanitize URL (HTTP/HTTPS, non-empty host, no userinfo, valid port, fragment stripped)
+			sanitizedURL, err := httpx.SanitizeURL(res.URL)
+			if err != nil {
+				corruptLinesCount++
+				return
+			}
+
+			normURLHost := sanitizedURL.Hostname()
+
+			// 7-8. Scope check: both URL host and res.Hostname must pass scope
+			if !s.Allows(normURLHost) || !s.Allows(normResHost) {
 				outOfScopeCount++
+				return
+			}
+
+			// 9. Host mismatch check: both hostnames must match after normalization
+			if normResHost != normURLHost {
+				corruptLinesCount++
 				return
 			}
 
 			totalHttpObs++
 			_ = emitter.EmitHttp(map[string]any{
-				"hostname":       normHost,
-				"url":            res.URL,
+				"hostname":       normURLHost,
+				"url":            sanitizedURL.String(),
 				"status_code":    res.StatusCode,
 				"title":          res.Title,
 				"tech":           res.Tech,
@@ -530,6 +556,7 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	var corruptLinesCount int
 
 	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, initialScanBufferSize), maxScanTokenSize)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -551,6 +578,10 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			continue
 		}
 		inScopeURLs = append(inScopeURLs, line)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(stderr, "scan: stdin read error: %v\n", err)
+		return 3
 	}
 
 	emitter := emit.New(runID, stdout)

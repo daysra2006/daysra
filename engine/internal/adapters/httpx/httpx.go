@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"daysra-engine/internal/normalize"
 	"daysra-engine/internal/runner"
 )
 
@@ -110,6 +111,67 @@ func ParseLine(line string) (*Result, error) {
 		Tech:          tech,
 		ContentLength: entry.ContentLength,
 	}, nil
+}
+
+// SanitizeURL parses, validates, and sanitizes a raw HTTP/HTTPS URL produced by httpx.
+// It enforces:
+// 1. The scheme must be "http" or "https" (case-insensitive, normalized to lowercase).
+// 2. Userinfo is rejected (returns error if present).
+// 3. Hostname is present and normalized using normalize.Hostname.
+// 4. Port is validated (1-65535) if present and preserved.
+// 5. Fragment is stripped to avoid storing unnecessary client-side anchor states.
+// Path and query parameters are preserved without modification.
+func SanitizeURL(rawURL string) (*url.URL, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, errors.New("empty URL")
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("invalid URL scheme %q: only http and https are permitted", u.Scheme)
+	}
+
+	if u.User != nil {
+		return nil, errors.New("URL userinfo is not permitted")
+	}
+
+	// Reject explicit empty port separator without port value (e.g. "http://example.com:", "http://example.com:/path")
+	if strings.HasSuffix(u.Host, ":") {
+		return nil, errors.New("URL has explicit empty port")
+	}
+
+	rawHost := u.Hostname()
+	if rawHost == "" {
+		return nil, errors.New("URL missing hostname")
+	}
+
+	normHost, err := normalize.Hostname(rawHost)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL hostname %q: %w", rawHost, err)
+	}
+
+	port := u.Port()
+	if port != "" {
+		p, err := strconv.Atoi(port)
+		if err != nil || p <= 0 || p > 65535 {
+			return nil, fmt.Errorf("invalid URL port %q", port)
+		}
+		u.Host = net.JoinHostPort(normHost, port)
+	} else {
+		u.Host = normHost
+	}
+
+	u.Scheme = scheme
+	u.Fragment = ""
+	u.RawFragment = ""
+
+	return u, nil
 }
 
 // CheckVersion runs httpx -version to detect whether httpx is available and check its version.
