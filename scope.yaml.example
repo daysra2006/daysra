@@ -1,0 +1,15 @@
+# DAYSRA Scope Configuration
+# File ini mendefinisikan batas otorisasi dan domain yang diizinkan untuk diuji.
+
+authorization: "domain milik sendiri / lab / bug bounty <nama program>"
+
+allow:
+  - "example.com"
+  - "*.example.com"
+
+deny:
+  - "admin.example.com"
+
+max_rate: 50
+timeout: 600
+

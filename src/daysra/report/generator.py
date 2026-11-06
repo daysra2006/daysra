@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import re
+import html
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from jinja2 import Environment
 
+from daysra.core.sanitizer import (
+    CONTROL_SEQUENCE,
+    strip_control_characters,
+)
 from daysra.store.db import Database, HostObsRecord, HttpObsRecord, RunRecord
-
-CONTROL_SEQUENCE = re.compile(r"(?:\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f])")
 
 REPORT_TEMPLATE = """# Laporan Reconnaissance DAYSRA
 
@@ -23,20 +25,25 @@ REPORT_TEMPLATE = """# Laporan Reconnaissance DAYSRA
 > **PERINGATAN: Run ini Dibatalkan (Cancelled).**
 > Proses recon dihentikan oleh pengguna sebelum proses selesai.
 
+{% elif run.status == "failed" %}
+> [!WARNING]
+> **PERINGATAN: Run ini Gagal (Failed).**
+> Proses recon mengalami kegagalan pada saat eksekusi. Data di bawah ini hanya mencerminkan hasil sementara sebelum terjadi kesalahan.
+
 {% endif %}
 ## Ringkasan Run
 
 | Parameter | Nilai |
 | --- | --- |
-| **Target** | `{{ run.target | sanitize }}` |
-| **Run ID** | `{{ run.run_id | sanitize }}` |
-| **Status** | **{{ run.status | sanitize }}** |
+| **Target** | `{{ run.target | sanitize_code }}` |
+| **Run ID** | `{{ run.run_id | sanitize_code }}` |
+| **Status** | **{{ run.status | sanitize_text }}** |
 | **Total Host Unik** | {{ hosts | length }} |
 | **Host Hidup (HTTP)** | {{ http_obs | length }} |
-| **Waktu Mulai** | {{ run.started_at | sanitize }} |
-| **Waktu Selesai** | {{ (run.finished_at or '-') | sanitize }} |
+| **Waktu Mulai** | {{ run.started_at | sanitize_cell }} |
+| **Waktu Selesai** | {{ (run.finished_at or '-') | sanitize_cell }} |
 {% if run.tool_versions %}
-| **Versi Tool** | {% for tool, ver in run.tool_versions | dictsort %}{{ tool | sanitize }} `{{ ver | sanitize }}`{% if not loop.last %}, {% endif %}{% endfor %} |
+| **Versi Tool** | {% for tool, ver in run.tool_versions | dictsort %}{{ tool | sanitize_cell }} `{{ ver | sanitize_code }}`{% if not loop.last %}, {% endif %}{% endfor %} |
 {% endif %}
 
 ## Sebaran Sumber Temuan
@@ -45,7 +52,7 @@ REPORT_TEMPLATE = """# Laporan Reconnaissance DAYSRA
 | Sumber | Jumlah Host |
 | --- | ---: |
 {% for source, count in source_counts %}
-| {{ source | sanitize }} | {{ count }} |
+| {{ source | sanitize_cell }} | {{ count }} |
 {% endfor %}
 {% else %}
 *Tidak ada data sumber.*
@@ -57,7 +64,7 @@ REPORT_TEMPLATE = """# Laporan Reconnaissance DAYSRA
 | No | Hostname | Sumber | Alamat IP |
 | ---: | --- | --- | --- |
 {% for h in hosts %}
-| {{ loop.index }} | `{{ h.hostname | sanitize }}` | {{ (h.sources | join(', ') if h.sources else '-') | sanitize }} | {{ (h.ips | join(', ') if h.ips else '-') | sanitize }} |
+| {{ loop.index }} | `{{ h.hostname | sanitize_code }}` | {{ (h.sources | join(', ') if h.sources else '-') | sanitize_cell }} | {{ (h.ips | join(', ') if h.ips else '-') | sanitize_cell }} |
 {% endfor %}
 {% else %}
 *Tidak ada subdomain yang ditemukan.*
@@ -69,24 +76,86 @@ REPORT_TEMPLATE = """# Laporan Reconnaissance DAYSRA
 | No | URL | Status | Judul Halaman | Teknologi |
 | ---: | --- | :---: | --- | --- |
 {% for o in http_obs %}
-| {{ loop.index }} | `{{ o.url | sanitize }}` | {{ o.status_code if o.status_code is not none else '-' }} | {{ (o.title or '-') | sanitize }} | {{ (o.tech | join(', ') if o.tech else '-') | sanitize }} |
+| {{ loop.index }} | `{{ o.url | sanitize_code }}` | {{ o.status_code if o.status_code is not none else '-' }} | {{ (o.title or '-') | sanitize_cell }} | {{ (o.tech | join(', ') if o.tech else '-') | sanitize_cell }} |
 {% endfor %}
 {% else %}
 *Tidak ada host hidup yang terdeteksi.*
 {% endif %}
 
 ---
-*Dibuat oleh DAYSRA pada {{ generated_at | sanitize }}*
+*Dibuat oleh DAYSRA pada {{ generated_at | sanitize_text }}*
 """
 
 
-def sanitize_text(value: object) -> str:
-    """Sanitize text per Design Freeze 8.2: strip ANSI escape codes and escape table pipes."""
+def sanitize_inline_code(value: object) -> str:
+    """Sanitize values rendered inside Markdown inline code spans (`...`).
+
+    - Strips ANSI/OSC/C0/Bidi control characters.
+    - Encodes HTML entities to prevent XSS.
+    - Neutralizes backticks to &#96; to prevent breaking out of code spans.
+    - Escapes table pipes (|) to preserve table cell boundaries in GFM.
+    - Replaces newlines with space.
+    """
     if value is None:
         return ""
-    text = str(value)
-    clean = CONTROL_SEQUENCE.sub("", text)
-    return clean.replace("|", "\\|").replace("\n", " ").strip()
+    text = strip_control_characters(value)
+    text = html.escape(text, quote=True)
+    text = text.replace("`", "&#96;")
+    text = text.replace("|", "\\|").replace("\n", " ")
+    return text.strip()
+
+
+def sanitize_table_cell(value: object) -> str:
+    """Sanitize free-text values rendered inside Markdown table cells.
+
+    - Strips ANSI/OSC/C0/Bidi control characters.
+    - Encodes HTML entities to prevent XSS.
+    - Escapes table pipes (|) to preserve table columns.
+    - Neutralizes backticks to &#96;.
+    - Escapes brackets ([ and ]) to prevent Markdown link injection.
+    - Replaces newlines with space.
+    """
+    if value is None:
+        return ""
+    text = strip_control_characters(value)
+    text = html.escape(text, quote=True)
+    text = text.replace("`", "&#96;")
+    text = text.replace("[", "\\[").replace("]", "\\]")
+    text = text.replace("|", "\\|").replace("\n", " ")
+    return text.strip()
+
+
+def sanitize_inline_text(value: object) -> str:
+    """Sanitize free text in normal Markdown flow outside tables and code spans.
+
+    - Strips ANSI/OSC/C0/Bidi control characters.
+    - Encodes HTML entities to prevent XSS.
+    - Neutralizes backticks to &#96;.
+    - Escapes Markdown formatting characters ([ ], *, _, ~).
+    - Replaces newlines with space.
+    """
+    if value is None:
+        return ""
+    text = strip_control_characters(value)
+    text = html.escape(text, quote=True)
+    text = text.replace("`", "&#96;")
+    text = (
+        text.replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("~", "\\~")
+    )
+    return text.replace("\n", " ").strip()
+
+
+def sanitize_text(value: object) -> str:
+    """Universal backward-compatible sanitization function.
+
+    Performs control character stripping, HTML entity escaping, backtick neutralization,
+    pipe escaping, and newline collapse.
+    """
+    return sanitize_table_cell(value)
 
 
 def render_markdown_report(
@@ -113,6 +182,10 @@ def render_markdown_report(
         keep_trailing_newline=True,
     )
     env.filters["sanitize"] = sanitize_text
+    env.filters["sanitize_code"] = sanitize_inline_code
+    env.filters["sanitize_cell"] = sanitize_table_cell
+    env.filters["sanitize_text"] = sanitize_inline_text
+
     template = env.from_string(REPORT_TEMPLATE)
 
     rendered = template.render(
@@ -152,4 +225,13 @@ def generate_report_for_run(
     )
 
 
-__all__ = ["generate_report_for_run", "render_markdown_report", "sanitize_text"]
+__all__ = [
+    "CONTROL_SEQUENCE",
+    "generate_report_for_run",
+    "render_markdown_report",
+    "sanitize_inline_code",
+    "sanitize_inline_text",
+    "sanitize_table_cell",
+    "sanitize_text",
+    "strip_control_characters",
+]
