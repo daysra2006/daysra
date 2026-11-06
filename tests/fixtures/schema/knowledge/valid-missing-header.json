@@ -1,0 +1,9 @@
+{
+  "template_id": "missing-security-headers",
+  "title": "Header keamanan tidak lengkap",
+  "meaning": "Respons HTTP tidak memuat satu atau lebih header keamanan yang diharapkan.",
+  "impact": "Browser mungkin tidak mendapat perlindungan tambahan terhadap kelas serangan tertentu.",
+  "verify_steps": ["Periksa header respons", "Bandingkan dengan kebijakan aplikasi"],
+  "concept": "Header keamanan HTTP",
+  "lang": "id"
+}

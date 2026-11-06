@@ -1,0 +1,2 @@
+[[34mINF[0m] Current Version: v2.17.0
+[[34mINF[0m] Subfinder Config Directory: /home/user/.config/subfinder

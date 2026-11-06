@@ -1,0 +1,9 @@
+{
+  "template_id": "invalid-steps-type",
+  "title": "Langkah salah tipe",
+  "meaning": "verify_steps sengaja berupa string.",
+  "impact": "Fixture harus gagal karena verify_steps wajib array.",
+  "verify_steps": "Periksa skema",
+  "concept": "Validasi tipe",
+  "lang": "id"
+}

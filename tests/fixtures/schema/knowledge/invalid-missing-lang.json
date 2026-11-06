@@ -1,0 +1,8 @@
+{
+  "template_id": "missing-language",
+  "title": "Tanpa bahasa",
+  "meaning": "Field lang sengaja dihilangkan.",
+  "impact": "Fixture harus gagal karena field wajib tidak ada.",
+  "verify_steps": ["Periksa skema"],
+  "concept": "Validasi skema"
+}

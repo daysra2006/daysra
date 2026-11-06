@@ -1,0 +1,9 @@
+{
+  "template_id": "sql-injection-detect",
+  "title": "Indikasi SQL injection",
+  "meaning": "Aplikasi menerima input yang dapat memengaruhi kueri basis data.",
+  "impact": "Penyerang dapat membaca atau mengubah data bila kerentanan terkonfirmasi.",
+  "verify_steps": ["Tinjau parameter yang dilaporkan", "Konfirmasi secara aman di lingkungan legal"],
+  "concept": "Validasi input dan parameterized query",
+  "lang": "id"
+}
