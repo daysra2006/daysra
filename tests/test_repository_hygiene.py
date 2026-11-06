@@ -58,14 +58,14 @@ class TestGitIgnoreHygiene:
 
 
 class TestScopeYamlIntegrity:
-    """Validate repository root scope.yaml schema compliance and absence of sensitive targets."""
+    """Validate repository root scope.yaml.example template schema compliance and absence of sensitive targets."""
 
-    def test_scope_yaml_schema_and_placeholders(self) -> None:
+    def test_scope_yaml_example_schema_and_placeholders(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
-        scope_path = repo_root / "scope.yaml"
-        assert scope_path.is_file(), "scope.yaml must exist in repository root"
+        template_path = repo_root / "scope.yaml.example"
+        assert template_path.is_file(), "scope.yaml.example template must exist in repository root"
 
-        content = scope_path.read_text(encoding="utf-8")
+        content = template_path.read_text(encoding="utf-8")
         lines = content.splitlines()
 
         # Validate allowed top-level keys
@@ -79,7 +79,9 @@ class TestScopeYamlIntegrity:
                 key = stripped.split(":", 1)[0].strip()
                 found_keys.add(key)
 
-        assert found_keys.issubset(allowed_keys), f"Unexpected keys in scope.yaml: {found_keys - allowed_keys}"
+        assert found_keys.issubset(allowed_keys), (
+            f"Unexpected keys in scope.yaml.example: {found_keys - allowed_keys}"
+        )
         assert "authorization" in found_keys, "authorization key is required"
         assert "allow" in found_keys, "allow key is required"
 
@@ -96,7 +98,7 @@ class TestScopeYamlIntegrity:
         ]
         lower_content = content.lower()
         for term in forbidden_terms:
-            assert term not in lower_content, f"Found sensitive term '{term}' in scope.yaml"
+            assert term not in lower_content, f"Found sensitive term '{term}' in scope.yaml.example"
 
         # Check placeholder targets
-        assert "example.com" in content, "scope.yaml should reference generic example.com placeholder"
+        assert "example.com" in content, "scope.yaml.example should reference generic example.com placeholder"
