@@ -688,7 +688,7 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				"name":         finding.Name,
 				"severity":     finding.Severity,
 				"cve":          finding.CVEs,
-				"matched_at":   nuclei.SanitizeMatchedAt(finding.MatchedAt),
+				"matched_at":   finding.MatchedAt, // already sanitized by ParseLine
 				"evidence":     finding.Evidence,
 				"tool":         finding.Tool,
 				"tool_version": finding.ToolVersion,

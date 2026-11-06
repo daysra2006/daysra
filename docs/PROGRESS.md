@@ -52,6 +52,7 @@ Tanggal: 2026-11-05
 - [x] Langkah 2: Adapter nuclei (Go) di `internal/adapters/nuclei`, subcommand `daysra-engine scan`, redaksi bukti sensitif, pemotongan bukti 2 KB, penolakan kebocoran request/response
 - [x] Langkah 2b: Profil scan bawaan tanpa default-login (`tech,exposure,misconfig`), opsi `--include-tags`, penolakan etags terlarang
 - [x] Langkah 2c: Pisahkan timeout per request tool (Subfinder 30 dtk, httpx 10 dtk, Nuclei 10 dtk) dari timeout tahap `scope.Timeout`; total timeout scan tidak lagi dikalikan jumlah URL dan tanpa batas minimum 2 menit
+- [x] Langkah 2d: Perkuat redaksi nuclei: `matched-at` yang tidak bisa di-parse ditolak (fail-closed), redaksi pola rahasia mentah (AWS access key, JWT, token GitHub/Slack, blok private key, pasangan `key=value`), dan pemotongan bukti 2 KB di batas rune UTF-8
 - [x] Langkah 3: Penyimpanan Python di `daysra.store` (`findings`, `finding_obs`, migrasi `PRAGMA user_version = 3`, ingestor event `finding`, deduplikasi temuan)
 - [ ] Langkah 4: CLI `daysra scan DOMAIN`, Simple Mode temuan kerentanan, dan seksi temuan laporan Markdown
 - [ ] Langkah 5: Penutup M3, pembaruan dokumentasi, dan verifikasi akhir suite pengujian
