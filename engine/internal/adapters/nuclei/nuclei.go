@@ -21,6 +21,11 @@ import (
 // ExpectedVersion is the pinned fixture version of nuclei.
 const ExpectedVersion = "v3.11.1"
 
+// RequestTimeout is the per-request timeout in seconds passed to nuclei's -timeout flag.
+// It matches the verified default of nuclei v3.11.1 and is intentionally independent
+// of scope.Timeout, which bounds the whole scan stage instead.
+const RequestTimeout = 10
+
 // maxEvidenceBytes is the maximum allowed byte length for sanitized evidence.
 const maxEvidenceBytes = 2048
 
@@ -126,13 +131,15 @@ func ResolveTags(includeTags []string) ([]string, bool, []string) {
 // Follow-redirects is deliberately NOT included per Rule 18.
 // -duc (no update check) and -ni (no interactsh/OAST) are always included.
 // Custom template paths (-t, -w) are NEVER added per Rule 18.
-func BuildArgs(maxRate, concurrency, timeout int, tags, excludeTags []string, severity []string) []string {
+// The -timeout flag always uses the per-request RequestTimeout constant, never scope.Timeout.
+func BuildArgs(maxRate, concurrency int, tags, excludeTags []string, severity []string) []string {
 	args := []string{
 		"-j",
 		"-silent",
 		"-nc",
 		"-duc",
 		"-ni",
+		"-timeout", strconv.Itoa(RequestTimeout),
 	}
 
 	if len(severity) > 0 {
@@ -149,9 +156,6 @@ func BuildArgs(maxRate, concurrency, timeout int, tags, excludeTags []string, se
 	}
 	if concurrency > 0 {
 		args = append(args, "-c", strconv.Itoa(concurrency))
-	}
-	if timeout > 0 {
-		args = append(args, "-timeout", strconv.Itoa(timeout))
 	}
 
 	return args

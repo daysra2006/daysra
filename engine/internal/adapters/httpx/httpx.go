@@ -21,6 +21,11 @@ import (
 // ExpectedVersion is the pinned fixture version of httpx.
 const ExpectedVersion = "v1.12.0"
 
+// RequestTimeout is the per-request timeout in seconds passed to httpx's -timeout flag.
+// It matches the verified default of httpx v1.12.0 and is intentionally independent
+// of scope.Timeout, which bounds the whole probe stage instead.
+const RequestTimeout = 10
+
 var versionRegex = regexp.MustCompile(`(?i)v?\d+\.\d+(?:\.\d+)?`)
 
 // Entry represents a single JSON object produced by httpx with -silent -json -sc -title -td -cl.
@@ -49,7 +54,8 @@ type Result struct {
 // BuildArgs constructs the argument array for httpx subprocess execution.
 // Host input is passed via stdin, so no target or input file flag is added here.
 // Follow-redirects (-fr / -follow-redirects) is intentionally not included per design freeze rule 17.
-func BuildArgs(maxRate, timeout int) []string {
+// The -timeout flag always uses the per-request RequestTimeout constant, never scope.Timeout.
+func BuildArgs(maxRate int) []string {
 	args := []string{
 		"-silent",
 		"-json",
@@ -57,13 +63,11 @@ func BuildArgs(maxRate, timeout int) []string {
 		"-title",
 		"-td",
 		"-cl",
+		"-timeout", strconv.Itoa(RequestTimeout),
 	}
 
 	if maxRate > 0 {
 		args = append(args, "-rl", strconv.Itoa(maxRate))
-	}
-	if timeout > 0 {
-		args = append(args, "-timeout", strconv.Itoa(timeout))
 	}
 
 	return args

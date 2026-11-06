@@ -183,7 +183,7 @@ func TestParseLine_CorruptJSON(t *testing.T) {
 
 // TestBuildArgs ensures no follow-redirect, -duc, and -ni are always present.
 func TestBuildArgs(t *testing.T) {
-	args := nuclei.BuildArgs(10, 10, 10,
+	args := nuclei.BuildArgs(10, 10,
 		[]string{"tech", "exposure"},
 		[]string{"intrusive", "fuzz"},
 		[]string{"info", "medium", "high", "critical"},
@@ -196,6 +196,14 @@ func TestBuildArgs(t *testing.T) {
 		if !strings.Contains(argStr, required) {
 			t.Errorf("BuildArgs missing required flag %q in: %v", required, args)
 		}
+	}
+
+	// Per-request timeout comes from the adapter constant, never from scope.
+	if got := buildArgsFlagValue(args, "-timeout"); got != "10" {
+		t.Errorf("-timeout = %q, want %q", got, "10")
+	}
+	if nuclei.RequestTimeout != 10 {
+		t.Errorf("RequestTimeout = %d, want 10 (nuclei v3.11.1 default)", nuclei.RequestTimeout)
 	}
 
 	// Follow-redirect must NOT be present.
@@ -219,6 +227,15 @@ func TestBuildArgs(t *testing.T) {
 			t.Errorf("BuildArgs contains forbidden custom template flag %q in: %v", forbidden, args)
 		}
 	}
+}
+
+func buildArgsFlagValue(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // TestDefaultTags_NoDefaultLogin verifies that DefaultTags strictly contains only safe tags

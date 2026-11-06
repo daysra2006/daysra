@@ -13,26 +13,23 @@ func TestBuildArgs(t *testing.T) {
 	tests := []struct {
 		name     string
 		maxRate  int
-		timeout  int
 		wantArgs []string
 	}{
 		{
 			name:     "default options",
 			maxRate:  0,
-			timeout:  0,
-			wantArgs: []string{"-silent", "-json", "-sc", "-title", "-td", "-cl"},
+			wantArgs: []string{"-silent", "-json", "-sc", "-title", "-td", "-cl", "-timeout", "10"},
 		},
 		{
-			name:     "with max rate and timeout",
+			name:     "with max rate",
 			maxRate:  10,
-			timeout:  15,
-			wantArgs: []string{"-silent", "-json", "-sc", "-title", "-td", "-cl", "-rl", "10", "-timeout", "15"},
+			wantArgs: []string{"-silent", "-json", "-sc", "-title", "-td", "-cl", "-timeout", "10", "-rl", "10"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildArgs(tt.maxRate, tt.timeout)
+			got := BuildArgs(tt.maxRate)
 			if !reflect.DeepEqual(got, tt.wantArgs) {
 				t.Errorf("BuildArgs = %v, want %v", got, tt.wantArgs)
 			}
@@ -44,6 +41,26 @@ func TestBuildArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildArgsUsesPerRequestTimeoutConstant(t *testing.T) {
+	if RequestTimeout != 10 {
+		t.Errorf("RequestTimeout = %d, want 10 (httpx v1.12.0 default)", RequestTimeout)
+	}
+	args := BuildArgs(10)
+	got := flagValue(args, "-timeout")
+	if got != "10" {
+		t.Errorf("-timeout = %q, want %q", got, "10")
+	}
+}
+
+func flagValue(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func TestParseLine(t *testing.T) {
