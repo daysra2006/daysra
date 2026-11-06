@@ -24,6 +24,11 @@ const (
 	StatusFailed    Status = "failed"
 )
 
+const (
+	initialScanBufferSize = 64 * 1024
+	maxScanTokenSize      = 4 * 1024 * 1024
+)
+
 // Options configures command execution.
 type Options struct {
 	Timeout       time.Duration
@@ -104,16 +109,24 @@ func Run(ctx context.Context, name string, args []string, opts Options) Result {
 	var stderrBuf bytes.Buffer
 	stdoutDone := make(chan struct{})
 	stderrDone := make(chan struct{})
+	var stdoutErr error
+	var stderrErr error
 
 	// Read stdout line-by-line
 	go func() {
 		defer close(stdoutDone)
 		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, initialScanBufferSize), maxScanTokenSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if opts.LineHandler != nil {
 				opts.LineHandler(line)
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			stdoutErr = err
+			// Active stream draining: drain remaining stdout so child does not block on write
+			_, _ = io.Copy(io.Discard, stdoutPipe)
 		}
 	}()
 
@@ -122,11 +135,17 @@ func Run(ctx context.Context, name string, args []string, opts Options) Result {
 		defer close(stderrDone)
 		r := io.TeeReader(stderrPipe, &stderrBuf)
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, initialScanBufferSize), maxScanTokenSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if opts.StderrHandler != nil {
 				opts.StderrHandler(line)
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			stderrErr = err
+			// Active stream draining directly on stderrPipe (NOT on r, to avoid bloating stderrBuf)
+			_, _ = io.Copy(io.Discard, stderrPipe)
 		}
 	}()
 
@@ -178,6 +197,24 @@ func Run(ctx context.Context, name string, args []string, opts Options) Result {
 			ExitCode: 3,
 			Stderr:   stderrBuf.String(),
 			Error:    waitErr,
+		}
+	}
+
+	// Check scanner errors (when subprocess exited 0)
+	if stdoutErr != nil || stderrErr != nil {
+		var combinedErr error
+		if stdoutErr != nil && stderrErr != nil {
+			combinedErr = fmt.Errorf("scanner errors: stdout: %w; stderr: %v", stdoutErr, stderrErr)
+		} else if stdoutErr != nil {
+			combinedErr = fmt.Errorf("stdout scanner error: %w", stdoutErr)
+		} else {
+			combinedErr = fmt.Errorf("stderr scanner error: %w", stderrErr)
+		}
+		return Result{
+			Status:   StatusPartial,
+			ExitCode: 4,
+			Stderr:   stderrBuf.String(),
+			Error:    combinedErr,
 		}
 	}
 

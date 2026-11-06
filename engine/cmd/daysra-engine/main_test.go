@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,6 +234,7 @@ type eventRecord struct {
 func parseEvents(t *testing.T, output string, expectedRunID string) []eventRecord {
 	var events []eventRecord
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -683,6 +685,58 @@ func TestProbeFakeHttpxProcess(t *testing.T) {
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
 
+	case "echo-hosts":
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			host := strings.TrimSpace(scanner.Text())
+			if host != "" {
+				fmt.Fprintf(os.Stdout, "{\"url\":\"https://%s\",\"host\":%q,\"status_code\":200,\"title\":\"Test\",\"tech\":[\"Go\"],\"content_length\":128}\n", host, host)
+			}
+		}
+		os.Exit(0)
+
+	case "url-out-of-scope":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		// Host is in-scope ("api.example.com"), but URL points to out-of-scope domain
+		os.Stdout.WriteString("{\"url\":\"https://evil.attacker.test/login\",\"host\":\"api.example.com\",\"status_code\":200,\"title\":\"Evil\",\"tech\":[],\"content_length\":100}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
+	case "subdomain-lookalike":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		// Host is in-scope ("example.com"), but URL is a lookalike domain
+		os.Stdout.WriteString("{\"url\":\"https://example.com.attacker.test/page\",\"host\":\"example.com\",\"status_code\":200,\"title\":\"Phish\",\"tech\":[],\"content_length\":100}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
+	case "userinfo-url":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		// Host is in-scope ("example.com"), URL has userinfo pointing to attacker.test
+		os.Stdout.WriteString("{\"url\":\"https://example.com@attacker.test/secret\",\"host\":\"example.com\",\"status_code\":200,\"title\":\"Userinfo\",\"tech\":[],\"content_length\":100}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
+	case "malformed-url":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		os.Stdout.WriteString("{\"url\":\":::not-valid:::\",\"host\":\"api.example.com\",\"status_code\":200}\n")
+		os.Stdout.WriteString("{\"url\":\"/relative\",\"host\":\"api.example.com\",\"status_code\":200}\n")
+		os.Stdout.WriteString("{\"url\":\"http://\",\"host\":\"api.example.com\",\"status_code\":200}\n")
+		os.Stdout.WriteString("{\"url\":\"javascript:alert(1)\",\"host\":\"api.example.com\",\"status_code\":200}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
+	case "url-in-scope-port":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		os.Stdout.WriteString("{\"url\":\"https://api.example.com:8443/login\",\"host\":\"api.example.com:8443\",\"status_code\":200,\"title\":\"API Port\",\"tech\":[\"Nginx\"],\"content_length\":256}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
+	case "host-mismatch":
+		os.Stderr.WriteString("[INF] Starting probing\n")
+		os.Stdout.WriteString("{\"url\":\"https://web.example.com/dashboard\",\"host\":\"api.example.com\",\"status_code\":200,\"title\":\"Web Dashboard\",\"tech\":[\"Apache\"],\"content_length\":512}\n")
+		os.Stderr.WriteString("[INF] Probing finished\n")
+		os.Exit(0)
+
 	default:
 		os.Exit(0)
 	}
@@ -1021,6 +1075,339 @@ func TestProbeMissingRequiredFlags(t *testing.T) {
 	}
 }
 
+func TestProbe_StdinLineExceeds64KB_DropsSubsequentHosts_ReproducesFinding08(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "echo-hosts")
+	runID := "01JTESTPROBESCANNER00000000"
+
+	// Input consists of:
+	// 1. Valid hostname: api.example.com
+	// 2. Synthetic invalid line exceeding 64KB (128KB)
+	// 3. Valid hostname: web.example.com
+	input := "api.example.com\n" + strings.Repeat("x", 128*1024) + "\n" + "web.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var foundApi, foundWeb bool
+	var runEndEvent *eventRecord
+
+	for i := range events {
+		ev := &events[i]
+		if ev.Type == "http" {
+			if h, ok := ev.Data["hostname"].(string); ok {
+				if h == "api.example.com" {
+					foundApi = true
+				}
+				if h == "web.example.com" {
+					foundWeb = true
+				}
+			}
+		}
+		if ev.Type == "run_end" {
+			runEndEvent = ev
+		}
+	}
+
+	t.Logf("probe result: exitCode=%d, foundApi=%v, foundWeb=%v, runEndStatus=%v, eventsCount=%d",
+		code, foundApi, foundWeb, runEndEvent != nil && runEndEvent.Data["status"] != nil, len(events))
+
+	if !foundApi {
+		t.Errorf("expected api.example.com (before 128KB line) to be processed")
+	}
+	if !foundWeb {
+		t.Errorf("expected valid hostname 'web.example.com' following 128KB line to be processed")
+	}
+	if runEndEvent == nil || runEndEvent.Data["status"] != "complete" {
+		t.Errorf("expected probe run_end status complete, got %v", runEndEvent)
+	}
+	if code != 0 {
+		t.Errorf("expected probe exit code 0, got %d", code)
+	}
+}
+
+func TestProbe_StdinTokenExceeds4MB_FailsGracefully(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "echo-hosts")
+	runID := "01JTESTPROBETOKEN4MB00000000"
+
+	input := "api.example.com\n" + strings.Repeat("x", 5*1024*1024) + "\n" + "web.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+
+	t.Logf("probe 5MB result: exitCode=%d, stdoutLen=%d, stderr=%q", code, stdoutBuf.Len(), stderrBuf.String())
+
+	// Exit code must be 3 (input error before run_start)
+	if code != 3 {
+		t.Errorf("code = %d, want 3 for token exceeding 4MB", code)
+	}
+	if !strings.Contains(stderrBuf.String(), "stdin read error") {
+		t.Errorf("expected stderr to contain 'stdin read error', got %q", stderrBuf.String())
+	}
+	// No false run_end complete emitted
+	if strings.Contains(stdoutBuf.String(), `"type":"run_end"`) {
+		t.Errorf("expected no run_end emitted when stdin fails before run_start, got: %s", stdoutBuf.String())
+	}
+}
+
+// Stage 7G-B (FINDING-09 Regression Tests): HTTPX Result URL Host Revalidation
+
+func TestProbe_URLHostOutOfScope_Filtered(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "url-out-of-scope")
+	runID := "01JTESTURLOUTSCOPE000000000"
+
+	input := "api.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+	var foundScopeWarning bool
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+		if ev.Type == "warning" && strings.Contains(ev.Data["message"].(string), "hosts filtered out of scope") {
+			foundScopeWarning = true
+		}
+	}
+
+	// Security requirement (FINDING-09):
+	// Even though entry.Host was in-scope ("api.example.com"), entry.URL pointed to out-of-scope "evil.attacker.test".
+	// Expected: 0 http events emitted, and out-of-scope warning emitted.
+	if len(httpObs) > 0 {
+		t.Fatalf("FINDING-09 reproduced: expected 0 http events due to out-of-scope URL host, but got %d: %v", len(httpObs), httpObs)
+	}
+	if !foundScopeWarning {
+		t.Errorf("expected out-of-scope warning for out-of-scope URL host")
+	}
+}
+
+func TestProbe_SubdomainLookalikeURL_Filtered(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "subdomain-lookalike")
+	runID := "01JTESTURLLOOKALIKE00000000"
+
+	input := "example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+	}
+
+	// Security requirement:
+	// entry.URL is "https://example.com.attacker.test/page" (lookalike domain).
+	// Must be rejected by scope check on URL host.
+	if len(httpObs) > 0 {
+		t.Fatalf("FINDING-09 reproduced: expected 0 http events for lookalike domain, but got %d: %v", len(httpObs), httpObs)
+	}
+}
+
+func TestProbe_UserinfoURL_Rejected(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "userinfo-url")
+	runID := "01JTESTURLUSERINFO000000000"
+
+	input := "example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+	}
+
+	// Security requirement:
+	// entry.URL is "https://example.com@attacker.test/secret".
+	// The true host is "attacker.test" (out-of-scope).
+	// Must not be confused by userinfo "example.com"; must be rejected.
+	if len(httpObs) > 0 {
+		t.Fatalf("FINDING-09 reproduced: expected 0 http events for userinfo spoofing URL, but got %d: %v", len(httpObs), httpObs)
+	}
+}
+
+func TestProbe_MalformedURL_TreatedAsCorrupt(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "malformed-url")
+	runID := "01JTESTURLMALFORMED00000000"
+
+	input := "api.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+	var foundCorruptWarning bool
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+		if ev.Type == "warning" && strings.Contains(ev.Data["message"].(string), "corrupt output lines skipped") {
+			foundCorruptWarning = true
+		}
+	}
+
+	// Security requirement:
+	// All 4 URLs were malformed (schemeless, relative, javascript:, or syntax error).
+	// None should be emitted as valid http observation.
+	if len(httpObs) > 0 {
+		t.Fatalf("FINDING-09 reproduced: expected 0 http events for malformed URLs, but got %d: %v", len(httpObs), httpObs)
+	}
+	if !foundCorruptWarning {
+		t.Errorf("expected corrupt output lines warning for malformed URLs")
+	}
+}
+
+func TestProbe_URLHostInScope_Accepted(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "url-in-scope-port")
+	runID := "01JTESTURLINSCOPE0000000000"
+
+	input := "api.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+	}
+
+	if len(httpObs) != 1 {
+		t.Fatalf("expected 1 in-scope http event, got %d: %v", len(httpObs), httpObs)
+	}
+	if httpObs[0]["hostname"] != "api.example.com" {
+		t.Errorf("expected hostname 'api.example.com', got %v", httpObs[0]["hostname"])
+	}
+	if httpObs[0]["url"] != "https://api.example.com:8443/login" {
+		t.Errorf("expected url 'https://api.example.com:8443/login', got %v", httpObs[0]["url"])
+	}
+	if codeVal, ok := httpObs[0]["status_code"].(float64); !ok || int(codeVal) != 200 {
+		t.Errorf("expected status_code 200, got %v", httpObs[0]["status_code"])
+	}
+}
+
+func TestProbe_HostMismatch_AuditBehavior(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeHttpx(t, "host-mismatch")
+	runID := "01JTESTHOSTMISMATCH00000000"
+
+	input := "api.example.com\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"probe",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--httpx-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+	if code != 0 {
+		t.Fatalf("run(probe) exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+	}
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var httpObs []map[string]any
+	var foundCorruptWarning bool
+
+	for _, ev := range events {
+		if ev.Type == "http" {
+			httpObs = append(httpObs, ev.Data)
+		}
+		if ev.Type == "warning" && strings.Contains(ev.Data["message"].(string), "corrupt output lines skipped") {
+			foundCorruptWarning = true
+		}
+	}
+
+	// Decision policy: Host mismatch between entry.Host and URL hostname must be rejected as corrupt line.
+	if len(httpObs) != 0 {
+		t.Fatalf("expected 0 http events on host mismatch, got %d: %v", len(httpObs), httpObs)
+	}
+	if !foundCorruptWarning {
+		t.Errorf("expected corrupt output lines warning for host mismatch")
+	}
+}
+
 func createFakeNuclei(t *testing.T, mode string) string {
 	tempDir := t.TempDir()
 	binPath := filepath.Join(tempDir, "fake-nuclei")
@@ -1084,6 +1471,19 @@ func TestScanFakeNucleiProcess(t *testing.T) {
 	case "corrupt":
 		os.Stdout.WriteString("not json at all\n")
 		os.Stdout.WriteString("{\"template-id\":\"corrupt-test\"\n")
+		os.Exit(0)
+	case "echo-urls":
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			u := strings.TrimSpace(scanner.Text())
+			if u != "" {
+				parsed, err := url.Parse(u)
+				if err == nil && parsed.Hostname() != "" {
+					fmt.Fprintf(os.Stdout, "{\"template-id\":\"test-finding\",\"info\":{\"name\":\"Test Finding\",\"severity\":\"info\"},\"type\":\"http\",\"host\":%q,\"matched-at\":%q}\n", parsed.Hostname(), u)
+				}
+			}
+		}
 		os.Exit(0)
 	default:
 		os.Stderr.WriteString("unknown mode\n")
@@ -1359,5 +1759,100 @@ func TestScanIncludeTagsForbiddenTagsRejected(t *testing.T) {
 	}
 	if rejectedCount < 3 {
 		t.Errorf("expected at least 3 warning events for rejected tags, got %d", rejectedCount)
+	}
+}
+
+func TestScan_StdinLongURLPathExceeds64KB_ReproducesFinding08(t *testing.T) {
+	scopePath := createTestScope(t, []string{"app.example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeNuclei(t, "echo-urls")
+	runID := "01JTESTSCANSCANNER000000000"
+
+	// Input consists of:
+	// 1. Normal in-scope URL: http://app.example.com/normal
+	// 2. In-scope URL with valid hostname, but path length exceeds 64KB (70KB total)
+	// 3. Normal in-scope URL: http://app.example.com/after
+	longURL := "http://app.example.com/" + strings.Repeat("p", 70*1024)
+	input := "http://app.example.com/normal\n" + longURL + "\n" + "http://app.example.com/after\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"scan",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--nuclei-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+
+	events := parseEvents(t, stdoutBuf.String(), runID)
+	var foundNormal, foundLong, foundAfter bool
+	var runEndEvent *eventRecord
+
+	for i := range events {
+		ev := &events[i]
+		if ev.Type == "finding" {
+			if matchedAt, ok := ev.Data["matched_at"].(string); ok {
+				if strings.Contains(matchedAt, "/normal") {
+					foundNormal = true
+				}
+				if strings.Contains(matchedAt, longURL) {
+					foundLong = true
+				}
+				if strings.Contains(matchedAt, "/after") {
+					foundAfter = true
+				}
+			}
+		}
+		if ev.Type == "run_end" {
+			runEndEvent = ev
+		}
+	}
+
+	t.Logf("scan result: exitCode=%d, foundNormal=%v, foundLong=%v, foundAfter=%v, runEndStatus=%v, eventsCount=%d",
+		code, foundNormal, foundLong, foundAfter, runEndEvent != nil && runEndEvent.Data["status"] != nil, len(events))
+
+	if !foundNormal {
+		t.Errorf("expected normal URL to be processed")
+	}
+	if !foundLong {
+		t.Errorf("expected in-scope URL with 70KB path to be processed")
+	}
+	if !foundAfter {
+		t.Errorf("expected valid in-scope URL following 70KB URL to be processed")
+	}
+	if runEndEvent == nil || runEndEvent.Data["status"] != "complete" {
+		t.Errorf("expected scan run_end status complete, got %v", runEndEvent)
+	}
+	if code != 0 {
+		t.Errorf("expected scan exit code 0, got %d", code)
+	}
+}
+
+func TestScan_StdinTokenExceeds4MB_FailsGracefully(t *testing.T) {
+	scopePath := createTestScope(t, []string{"app.example.com", "*.example.com"}, nil, 600)
+	fakeBin := createFakeNuclei(t, "echo-urls")
+	runID := "01JTESTSCANTOKEN4MB000000000"
+
+	longURL := "http://app.example.com/" + strings.Repeat("p", 5*1024*1024)
+	input := "http://app.example.com/normal\n" + longURL + "\n" + "http://app.example.com/after\n"
+	var stdoutBuf, stderrBuf bytes.Buffer
+	args := []string{
+		"scan",
+		"--scope", scopePath,
+		"--run-id", runID,
+		"--nuclei-bin", fakeBin,
+	}
+
+	code := runWithIOStdin(context.Background(), args, strings.NewReader(input), &stdoutBuf, &stderrBuf)
+
+	t.Logf("scan 5MB result: exitCode=%d, stdoutLen=%d, stderr=%q", code, stdoutBuf.Len(), stderrBuf.String())
+
+	if code != 3 {
+		t.Errorf("code = %d, want 3 for token exceeding 4MB", code)
+	}
+	if !strings.Contains(stderrBuf.String(), "stdin read error") {
+		t.Errorf("expected stderr to contain 'stdin read error', got %q", stderrBuf.String())
+	}
+	if strings.Contains(stdoutBuf.String(), `"type":"run_end"`) {
+		t.Errorf("expected no run_end emitted when stdin fails before run_start, got: %s", stdoutBuf.String())
 	}
 }

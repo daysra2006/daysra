@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from daysra.core.contracts import Event, validate_event
 from daysra.store.db import Database, sanitize_matched_at
+
+_SENSITIVE_PATTERN = re.compile(
+    r'(?i)(\bbearer\s+|'
+    r'["\']?(?:api[_-]?key|token|secret|password|passwd|auth(?:orization)?)["\']?\s*[:=]\s*["\']?)(?!bearer\b)([^"\'\s,}{]+)'
+)
+
+
+def _sanitize_raw_preview(line: str, max_length: int = 120) -> str:
+    """Create a bounded and sanitized single-line preview of a raw malformed line."""
+    preview = " ".join(line.split())
+    preview = _SENSITIVE_PATTERN.sub(r"\1[REDACTED]", preview)
+    if len(preview) > max_length:
+        preview = preview[: max_length - 3] + "..."
+    return preview
+
+
+@dataclass(frozen=True)
+class IngestLineError:
+    line_number: int
+    error_type: str
+    message: str
+    raw_preview: str = ""
 
 
 @dataclass(frozen=True)
@@ -18,6 +43,8 @@ class IngestResult:
     events_count: int
     http_count: int = 0
     findings_count: int = 0
+    errors_count: int = 0
+    errors: tuple[IngestLineError, ...] = ()
 
 
 class Ingestor:
@@ -41,18 +68,52 @@ class Ingestor:
         findings_seen = 0
         warnings_seen = 0
         events_seen = 0
+        errors_seen = 0
+        recorded_errors: list[IngestLineError] = []
         active_run_id = self.run_id
         run_started = False
 
         with self.db.transaction() as conn:
-            for raw_line in lines:
+            for line_no, raw_line in enumerate(lines, start=1):
                 line = raw_line.strip()
                 if not line:
                     continue
 
-                payload = json.loads(line)
-                event = validate_event(payload)
-                events_seen += 1
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as err:
+                    errors_seen += 1
+                    if len(recorded_errors) < 50:
+                        err_msg = str(err)
+                        if len(err_msg) > 300:
+                            err_msg = err_msg[:297] + "..."
+                        recorded_errors.append(
+                            IngestLineError(
+                                line_number=line_no,
+                                error_type="json_decode_error",
+                                message=err_msg,
+                                raw_preview=_sanitize_raw_preview(line),
+                            )
+                        )
+                    continue
+
+                try:
+                    event = validate_event(payload)
+                except ValidationError as err:
+                    errors_seen += 1
+                    if len(recorded_errors) < 50:
+                        err_msg = str(err)
+                        if len(err_msg) > 300:
+                            err_msg = err_msg[:297] + "..."
+                        recorded_errors.append(
+                            IngestLineError(
+                                line_number=line_no,
+                                error_type="validation_error",
+                                message=err_msg,
+                                raw_preview=_sanitize_raw_preview(line),
+                            )
+                        )
+                    continue
 
                 if active_run_id is None:
                     active_run_id = event.run_id
@@ -64,6 +125,7 @@ class Ingestor:
                 if self.on_event is not None:
                     self.on_event(event)
 
+                events_seen += 1
                 ts_iso = event.ts.isoformat()
 
                 if event.type == "run_start":
@@ -246,6 +308,8 @@ class Ingestor:
             events_count=events_seen,
             http_count=http_seen,
             findings_count=findings_seen,
+            errors_count=errors_seen,
+            errors=tuple(recorded_errors),
         )
 
 
@@ -260,4 +324,4 @@ def ingest_stream(
     return ingestor.ingest_lines(lines)
 
 
-__all__ = ["IngestResult", "Ingestor", "ingest_stream"]
+__all__ = ["IngestLineError", "IngestResult", "Ingestor", "ingest_stream"]

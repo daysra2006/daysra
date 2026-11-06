@@ -195,8 +195,22 @@ class Database:
         tool_versions: dict[str, str] | None = None,
         scope_hash: str | None = None,
     ) -> None:
-        tools_json = json.dumps(tool_versions or {}, sort_keys=True)
         cur = conn.cursor()
+        cur.execute("SELECT tool_versions FROM runs WHERE run_id = ?", (run_id,))
+        row = cur.fetchone()
+        merged_tools: dict[str, str] = {}
+        if row:
+            raw_tools = row["tool_versions"] if isinstance(row, dict) else row[0]
+            if raw_tools:
+                try:
+                    parsed = json.loads(raw_tools)
+                    if isinstance(parsed, dict):
+                        merged_tools.update(parsed)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+        if tool_versions:
+            merged_tools.update(tool_versions)
+        tools_json = json.dumps(merged_tools, sort_keys=True)
         cur.execute(
             """
             INSERT INTO runs (run_id, target, scope_hash, started_at, status, tool_versions)
@@ -204,7 +218,7 @@ class Database:
             ON CONFLICT(run_id) DO UPDATE SET
                 target = CASE WHEN excluded.target != '' THEN excluded.target ELSE runs.target END,
                 scope_hash = COALESCE(excluded.scope_hash, runs.scope_hash),
-                tool_versions = CASE WHEN excluded.tool_versions != '{}' THEN excluded.tool_versions ELSE runs.tool_versions END
+                tool_versions = excluded.tool_versions
             """,
             (run_id, target, scope_hash, started_at, status, tools_json),
         )
@@ -220,7 +234,15 @@ class Database:
         cur.execute(
             """
             UPDATE runs
-            SET status = ?, finished_at = COALESCE(?, finished_at)
+            SET
+                status = CASE
+                    WHEN status IN ('cancelled', 'failed') THEN status
+                    ELSE ?
+                END,
+                finished_at = CASE
+                    WHEN status IN ('cancelled', 'failed') THEN finished_at
+                    ELSE COALESCE(?, finished_at)
+                END
             WHERE run_id = ?
             """,
             (status, finished_at, run_id),

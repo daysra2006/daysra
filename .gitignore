@@ -1,0 +1,71 @@
+# ==============================================================================
+# DAYSRA - Git Ignore Rules (Go + Python Hybrid Project)
+# ==============================================================================
+
+# --- Python Bytecode & Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Python Packaging & Distribution ---
+*.egg-info/
+build/
+dist/
+eggs/
+.eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+*.egg
+
+# --- Python Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Python Tooling & Testing Caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Go Build Artifacts & Binaries ---
+/bin/
+bin/daysra-engine
+*.test
+*.out
+.cache/
+
+# --- DAYSRA Local Runtime & Data ---
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# --- Local Environment & Editor Artifacts ---
+
+.env
+.env.*
+!.env.example
+!.env.sample
+
+scope.yaml
+!scope.yaml.example
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+

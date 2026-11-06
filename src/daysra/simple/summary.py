@@ -4,11 +4,16 @@ from collections import Counter
 from collections.abc import Sequence
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from daysra.core.sanitizer import sanitize_terminal_text
 from daysra.store.db import HostObsRecord, HttpObsRecord, RunRecord
+
+# Backward-compatible internal alias
+_sanitize_terminal_text = sanitize_terminal_text
 
 
 def render_recon_summary(
@@ -28,6 +33,8 @@ def render_recon_summary(
         status_text.append("⚠ Parsial (Partial - Hasil Tidak Lengkap)", style="bold yellow")
     elif run.status == "cancelled":
         status_text.append("✖ Dibatalkan (Cancelled)", style="bold red")
+    elif run.status == "failed":
+        status_text.append("✖ Gagal (Failed)", style="bold red")
     else:
         status_text.append(f"✖ Status: {run.status}", style="bold red")
 
@@ -36,16 +43,16 @@ def render_recon_summary(
     meta_table = Table.grid(padding=(0, 2))
     meta_table.add_column(style="bold")
     meta_table.add_column()
-    meta_table.add_row("Target:", run.target)
-    meta_table.add_row("Run ID:", run.run_id)
+    meta_table.add_row("Target:", Text(_sanitize_terminal_text(run.target)))
+    meta_table.add_row("Run ID:", Text(_sanitize_terminal_text(run.run_id)))
     meta_table.add_row("Status:", status_text)
     meta_table.add_row("Total Host Unik:", str(len(hosts)))
     if http_obs:
         meta_table.add_row("Host Hidup (HTTP):", f"{len(live_hosts)} host ({len(http_obs)} endpoint)")
     if run.started_at:
-        meta_table.add_row("Waktu Mulai:", run.started_at)
+        meta_table.add_row("Waktu Mulai:", Text(_sanitize_terminal_text(run.started_at)))
     if run.finished_at:
-        meta_table.add_row("Waktu Selesai:", run.finished_at)
+        meta_table.add_row("Waktu Selesai:", Text(_sanitize_terminal_text(run.finished_at)))
 
     console.print()
     console.print(Panel(meta_table, title="[bold]Ringkasan Recon Simple Mode[/bold]", border_style="cyan"))
@@ -56,6 +63,12 @@ def render_recon_summary(
             "Data di bawah ini adalah hasil pengamatan parsial sebelum proses dihentikan."
         )
         console.print(Panel(warning_msg, border_style="yellow"))
+    elif run.status == "failed":
+        warning_msg = (
+            "[bold red]PERINGATAN:[/bold red] Proses ini mengalami kegagalan. "
+            "Data di bawah ini hanya mencerminkan hasil pengamatan sebelum terjadi kesalahan."
+        )
+        console.print(Panel(warning_msg, border_style="red"))
 
     if not hosts and not http_obs:
         console.print("[dim]Tidak ada subdomain atau host hidup yang ditemukan.[/dim]")
@@ -72,7 +85,7 @@ def render_recon_summary(
         src_table.add_column("Sumber", style="cyan")
         src_table.add_column("Jumlah Host", justify="right", style="green")
         for source, count in source_counts.most_common():
-            src_table.add_row(source, str(count))
+            src_table.add_row(Text(_sanitize_terminal_text(source)), str(count))
         console.print(src_table)
 
     # 3. 10 Host Teratas (Top 10 hosts)
@@ -88,9 +101,9 @@ def render_recon_summary(
         host_table.add_column("IP Address", style="dim")
 
         for i, h in enumerate(top_10, start=1):
-            sources_str = ", ".join(h.sources) if h.sources else "-"
-            ips_str = ", ".join(h.ips) if h.ips else "-"
-            host_table.add_row(str(i), h.hostname, sources_str, ips_str)
+            sources_str = ", ".join(_sanitize_terminal_text(s) for s in h.sources) if h.sources else "-"
+            ips_str = ", ".join(_sanitize_terminal_text(ip) for ip in h.ips) if h.ips else "-"
+            host_table.add_row(str(i), Text(_sanitize_terminal_text(h.hostname)), Text(sources_str), Text(ips_str))
 
         console.print(host_table)
 
@@ -148,7 +161,7 @@ def render_recon_summary(
             tech_table.add_column("Kemunculan", justify="right", style="green")
 
             for i, (t, count) in enumerate(tech_counts.most_common(10), start=1):
-                tech_table.add_row(str(i), t, str(count))
+                tech_table.add_row(str(i), Text(_sanitize_terminal_text(t)), str(count))
 
             console.print(tech_table)
 
@@ -168,14 +181,25 @@ def render_recon_summary(
                 code = o.status_code
                 code_style = "yellow" if 300 <= (code or 0) < 400 else "red"
                 code_str = f"[{code_style}]{code}[/{code_style}]"
-                title_str = (o.title[:40] + "...") if o.title and len(o.title) > 40 else (o.title or "-")
-                tech_str = ", ".join(o.tech[:3]) if o.tech else "-"
-                int_table.add_row(o.url, code_str, title_str, tech_str)
+                raw_title = _sanitize_terminal_text(o.title) if o.title else ""
+                title_str = (raw_title[:40] + "...") if len(raw_title) > 40 else (raw_title or "-")
+                tech_str = (
+                    ", ".join(_sanitize_terminal_text(t) for t in o.tech[:3])
+                    if o.tech
+                    else "-"
+                )
+                int_table.add_row(
+                    Text(_sanitize_terminal_text(o.url)),
+                    code_str,
+                    Text(title_str),
+                    Text(tech_str),
+                )
 
             console.print(int_table)
 
     if len(hosts) > 10 or len(http_obs) > 15:
-        console.print(f"[dim]Gunakan 'daysra report --run {run.run_id}' untuk melihat daftar lengkap.[/dim]")
+        safe_run_id = escape(run.run_id)
+        console.print(f"[dim]Gunakan 'daysra report --run {safe_run_id}' untuk melihat daftar lengkap.[/dim]")
 
 
 __all__ = ["render_recon_summary"]
