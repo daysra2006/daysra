@@ -190,7 +190,7 @@ func runRecon(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	var outOfScopeCount int
 	var corruptLinesCount int
 
-	subfinderArgs := subfinder.BuildArgs(normalizedTarget, s.MaxRate, s.Timeout)
+	subfinderArgs := subfinder.BuildArgs(normalizedTarget, s.MaxRate)
 
 	timeout := time.Duration(s.Timeout) * time.Second
 	if timeout <= 0 {
@@ -392,7 +392,7 @@ func runProbe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return 0
 	}
 
-	httpxArgs := httpx.BuildArgs(s.MaxRate, s.Timeout)
+	httpxArgs := httpx.BuildArgs(s.MaxRate)
 
 	timeout := time.Duration(s.Timeout) * time.Second
 	if timeout <= 0 {
@@ -640,21 +640,17 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		})
 	}
 
-	// Build nuclei args: use scope rate/timeout, safe active tags and severity.
-	// -duc and -ni are always included (Rule 18).
+	// Build nuclei args: use scope rate, safe active tags and severity.
+	// -duc and -ni are always included (Rule 18). The tool's -timeout is a
+	// per-request timeout from the adapter constant, never scope.Timeout.
 	maxRate := s.MaxRate
 	if maxRate <= 0 {
 		maxRate = 10
-	}
-	scanTimeout := s.Timeout
-	if scanTimeout <= 0 {
-		scanTimeout = 10
 	}
 
 	nucleiArgs := nuclei.BuildArgs(
 		maxRate,
 		10, // concurrency capped at 10 for safety
-		scanTimeout,
 		activeTags,
 		nuclei.ExcludedTags,
 		[]string{"info", "low", "medium", "high", "critical"},
@@ -662,10 +658,8 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 	stdinPayload := strings.Join(inScopeURLs, "\n") + "\n"
 
-	timeout := time.Duration(scanTimeout*len(inScopeURLs)+60) * time.Second
-	if timeout < 2*time.Minute {
-		timeout = 2 * time.Minute
-	}
+	// Stage timeout is a single budget for the whole scan stage, independent of URL count.
+	timeout := time.Duration(s.Timeout) * time.Second
 
 	var totalFindings int
 
@@ -694,7 +688,7 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				"name":         finding.Name,
 				"severity":     finding.Severity,
 				"cve":          finding.CVEs,
-				"matched_at":   nuclei.SanitizeMatchedAt(finding.MatchedAt),
+				"matched_at":   finding.MatchedAt, // already sanitized by ParseLine
 				"evidence":     finding.Evidence,
 				"tool":         finding.Tool,
 				"tool_version": finding.ToolVersion,

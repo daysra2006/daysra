@@ -136,6 +136,8 @@ timeout: 600        # detik per tahap
 - Subprocess selalu memakai array argumen, **tidak pernah** shell. Input target divalidasi sebagai hostname sebelum dipakai.
 - Tidak ada mode eksploitasi. Template Nuclei dibatasi ke kategori non-destruktif secara default (tanpa `dos`, `fuzz` agresif, brute force).
 
+`timeout` pada scope adalah **batas total satu tahap** (recon, probe, atau scan), bukan timeout per request. Adapter selalu meneruskan timeout per request yang kecil dan tetap ke flag `-timeout` tool (Subfinder 30 detik, httpx 10 detik, Nuclei 10 detik, sesuai default versi terpasang), sedangkan `scope.Timeout` dipakai sebagai `runner.Options.Timeout` untuk keseluruhan tahap. Karena itu total timeout scan tidak dikalikan dengan jumlah URL. Jika batas tahap habis, hasil sejauh ini tetap disimpan dengan status `partial` dan exit code 4 (lihat bagian 12).
+
 ## 8. Simple Mode (tanpa LLM)
 
 **Prinsip:** Simple Mode **deterministik**: tanpa LLM, tanpa jaringan, tanpa biaya. Penjelasan hanya berasal dari knowledge base buatan sendiri dan metadata yang dikirim tool.

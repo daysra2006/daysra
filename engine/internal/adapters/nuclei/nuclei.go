@@ -14,12 +14,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"daysra-engine/internal/runner"
 )
 
 // ExpectedVersion is the pinned fixture version of nuclei.
 const ExpectedVersion = "v3.11.1"
+
+// RequestTimeout is the per-request timeout in seconds passed to nuclei's -timeout flag.
+// It matches the verified default of nuclei v3.11.1 and is intentionally independent
+// of scope.Timeout, which bounds the whole scan stage instead.
+const RequestTimeout = 10
 
 // maxEvidenceBytes is the maximum allowed byte length for sanitized evidence.
 const maxEvidenceBytes = 2048
@@ -28,6 +34,13 @@ var (
 	versionRegex = regexp.MustCompile(`(?i)v?\d+\.\d+(?:\.\d+)?`)
 
 	// Sensitive patterns for evidence redaction pass.
+	rePrivateKey = regexp.MustCompile(`(?s)-----BEGIN [^-]*PRIVATE KEY[^-]*-----.*?-----END [^-]*PRIVATE KEY[^-]*-----`)
+	reAWSKey     = regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)
+	reJWT        = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
+	reGitHub     = regexp.MustCompile(`\b(?:ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9]{36,}\b`)
+	reSlack      = regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]+`)
+	reSecretKV   = regexp.MustCompile(`(?i)\b(client_secret|secret_key|access_key|private_key|secret)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;&"']+)`)
+
 	reAuthHeader = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\r\n,;]+`)
 	reBearer     = regexp.MustCompile(`(?i)(bearer\s+)[a-zA-Z0-9_\-\.]+`)
 	reCookie     = regexp.MustCompile(`(?i)((?:set-cookie|cookie)\s*[:=]\s*)[^\r\n]+`)
@@ -126,13 +139,15 @@ func ResolveTags(includeTags []string) ([]string, bool, []string) {
 // Follow-redirects is deliberately NOT included per Rule 18.
 // -duc (no update check) and -ni (no interactsh/OAST) are always included.
 // Custom template paths (-t, -w) are NEVER added per Rule 18.
-func BuildArgs(maxRate, concurrency, timeout int, tags, excludeTags []string, severity []string) []string {
+// The -timeout flag always uses the per-request RequestTimeout constant, never scope.Timeout.
+func BuildArgs(maxRate, concurrency int, tags, excludeTags []string, severity []string) []string {
 	args := []string{
 		"-j",
 		"-silent",
 		"-nc",
 		"-duc",
 		"-ni",
+		"-timeout", strconv.Itoa(RequestTimeout),
 	}
 
 	if len(severity) > 0 {
@@ -150,9 +165,6 @@ func BuildArgs(maxRate, concurrency, timeout int, tags, excludeTags []string, se
 	if concurrency > 0 {
 		args = append(args, "-c", strconv.Itoa(concurrency))
 	}
-	if timeout > 0 {
-		args = append(args, "-timeout", strconv.Itoa(timeout))
-	}
 
 	return args
 }
@@ -166,14 +178,25 @@ func FindingID(hostname, templateID, matcher, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RedactEvidence sanitizes evidence and applies a redaction pass for sensitive keywords
-// (Authorization, cookie, token, api-key, password), capping length at 2 KB.
+// RedactEvidence sanitizes evidence and applies a redaction pass for sensitive
+// keywords and raw secret formats (private keys, AWS keys, JWTs, GitHub and
+// Slack tokens, and secret key=value pairs), capping length at 2 KB.
+// Redaction runs before truncation and truncation happens on a rune boundary,
+// so the result is always valid UTF-8.
 func RedactEvidence(input string) string {
 	if input == "" {
 		return ""
 	}
 
-	s := reAuthHeader.ReplaceAllString(input, "${1}[REDACTED]")
+	// Redact raw secret formats before keyword-based patterns.
+	s := rePrivateKey.ReplaceAllString(input, "[REDACTED]")
+	s = reAWSKey.ReplaceAllString(s, "[REDACTED]")
+	s = reJWT.ReplaceAllString(s, "[REDACTED]")
+	s = reGitHub.ReplaceAllString(s, "[REDACTED]")
+	s = reSlack.ReplaceAllString(s, "[REDACTED]")
+	s = reSecretKV.ReplaceAllString(s, "${1}=[REDACTED]")
+
+	s = reAuthHeader.ReplaceAllString(s, "${1}[REDACTED]")
 	s = reBearer.ReplaceAllString(s, "${1}[REDACTED]")
 	s = reCookie.ReplaceAllString(s, "${1}[REDACTED]")
 	s = reToken.ReplaceAllString(s, "${1}[REDACTED]")
@@ -192,7 +215,11 @@ func RedactEvidence(input string) string {
 	}
 	res := strings.TrimSpace(buf.String())
 	if len(res) > maxEvidenceBytes {
-		res = res[:maxEvidenceBytes]
+		cut := maxEvidenceBytes
+		for cut > 0 && !utf8.RuneStart(res[cut]) {
+			cut--
+		}
+		res = res[:cut]
 	}
 	return res
 }
@@ -299,13 +326,15 @@ var sensitiveQueryKeywords = []string{
 
 // SanitizeMatchedAt strips userinfo and fragment from matched-at URL,
 // and redacts the value of any query parameter whose name contains sensitive keywords.
-func SanitizeMatchedAt(rawURL string) string {
+// It is fail-closed: an unparsable URL returns an error instead of the raw input,
+// so no unsanitized URL can be stored or reported.
+func SanitizeMatchedAt(rawURL string) (string, error) {
 	if strings.TrimSpace(rawURL) == "" {
-		return ""
+		return "", nil
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return rawURL
+		return "", fmt.Errorf("invalid matched-at URL: %w", err)
 	}
 
 	// Remove userinfo
@@ -333,7 +362,7 @@ func SanitizeMatchedAt(rawURL string) string {
 		u.RawQuery = q.Encode()
 	}
 
-	return u.String()
+	return u.String(), nil
 }
 
 // ParseLine is a pure parsing function: it receives a single JSON line and produces
@@ -356,12 +385,16 @@ func ParseLine(line string) (*Finding, error) {
 		return nil, errors.New("nuclei entry missing matched-at")
 	}
 
-	// Sanitize matched-at: remove userinfo, fragments, and redact sensitive query params
-	sanitizedMatchedAt := SanitizeMatchedAt(entry.MatchedAt)
+	// Sanitize matched-at: remove userinfo, fragments, and redact sensitive query params.
+	// An unparsable URL is rejected so the raw value never reaches storage or reports.
+	sanitizedMatchedAt, err := SanitizeMatchedAt(entry.MatchedAt)
+	if err != nil {
+		return nil, err
+	}
 
 	// Extract hostname and path from matched-at URL.
 	var hostname, path string
-	if u, err := url.Parse(sanitizedMatchedAt); err == nil {
+	if u, parseErr := url.Parse(sanitizedMatchedAt); parseErr == nil {
 		hostname = u.Hostname()
 		path = u.Path
 	}

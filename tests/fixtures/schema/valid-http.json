@@ -1,0 +1,1 @@
+{"schema_version":"1","type":"http","run_id":"01JVALID000000000000000000","ts":"2026-11-05T10:00:01Z","data":{"hostname":"example.com","url":"https://example.com","status_code":200,"title":"Example Domain","tech":["Nginx"],"content_length":1256}}

@@ -26,18 +26,67 @@ SENSITIVE_PARAM_KEYWORDS: tuple[str, ...] = (
     "sig",
 )
 
+DB_FILE_MODE = 0o600
+DB_DIR_MODE = 0o700
+
+
+def _restrict_db_permissions(path: Path) -> None:
+    """Enforce owner-only permissions on the database and any WAL/SHM sidecars."""
+    sidecars = (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+    for candidate in sidecars:
+        try:
+            candidate.chmod(DB_FILE_MODE)
+        except FileNotFoundError:
+            continue
+
+
+def _ensure_private_parent(path: Path) -> None:
+    """Create missing parent directories with 0700 without touching existing ones."""
+    missing: list[Path] = []
+    current = path.parent
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=DB_DIR_MODE)
+        except FileExistsError:
+            # Another process created it concurrently; never alter its mode.
+            if not directory.is_dir():
+                raise
+            continue
+        directory.chmod(DB_DIR_MODE)
+
 
 def sanitize_matched_at(raw_url: str) -> str:
     """Sanitize matched-at URL: remove userinfo (user:pass@), strip fragment,
 
     and redact query parameter values whose name contains sensitive keywords.
+    Raises ValueError when the URL cannot be parsed, so callers never store or
+    report the raw value.
     """
     if not raw_url or not raw_url.strip():
         return ""
     try:
         parts = urlsplit(raw_url.strip())
-    except ValueError:
-        return raw_url
+        # Accessing these properties validates the port range and authority;
+        # urlsplit() alone does not reject out-of-range ports.
+        hostname = parts.hostname
+        _ = parts.port
+    except ValueError as err:
+        raise ValueError(f"invalid matched-at URL: {err}") from err
+
+    if not parts.scheme or not hostname:
+        raise ValueError("invalid matched-at URL: missing scheme or host")
+    if any(ch.isspace() for ch in hostname):
+        raise ValueError("invalid matched-at URL: whitespace in host")
 
     netloc = parts.netloc
     if "@" in netloc:
@@ -68,7 +117,8 @@ def get_db_path(custom_path: Path | str | None = None) -> Path:
         xdg = os.environ.get("XDG_DATA_HOME")
         base = Path(xdg) if (xdg and xdg.strip()) else (Path.home() / ".local" / "share")
         p = base / "daysra" / "daysra.db"
-    p.parent.mkdir(parents=True, exist_ok=True)
+
+    _ensure_private_parent(p)
     return p
 
 
@@ -154,9 +204,17 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")
+        try:
+            # Tighten the database file before enabling WAL so SQLite creates
+            # the -wal/-shm sidecars with owner-only permissions too.
+            _restrict_db_permissions(self.path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            _restrict_db_permissions(self.path)
+        except Exception:
+            conn.close()
+            raise
         return conn
 
     def _init_db(self) -> None:
@@ -164,6 +222,7 @@ class Database:
         try:
             apply_migrations(conn)
         finally:
+            _restrict_db_permissions(self.path)
             conn.close()
 
     @contextmanager
@@ -173,6 +232,7 @@ class Database:
             with conn:
                 yield conn
         finally:
+            _restrict_db_permissions(self.path)
             conn.close()
 
     def get_user_version(self) -> int:

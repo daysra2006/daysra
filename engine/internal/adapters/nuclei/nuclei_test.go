@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"daysra-engine/internal/adapters/nuclei"
 )
@@ -183,7 +184,7 @@ func TestParseLine_CorruptJSON(t *testing.T) {
 
 // TestBuildArgs ensures no follow-redirect, -duc, and -ni are always present.
 func TestBuildArgs(t *testing.T) {
-	args := nuclei.BuildArgs(10, 10, 10,
+	args := nuclei.BuildArgs(10, 10,
 		[]string{"tech", "exposure"},
 		[]string{"intrusive", "fuzz"},
 		[]string{"info", "medium", "high", "critical"},
@@ -196,6 +197,14 @@ func TestBuildArgs(t *testing.T) {
 		if !strings.Contains(argStr, required) {
 			t.Errorf("BuildArgs missing required flag %q in: %v", required, args)
 		}
+	}
+
+	// Per-request timeout comes from the adapter constant, never from scope.
+	if got := buildArgsFlagValue(args, "-timeout"); got != "10" {
+		t.Errorf("-timeout = %q, want %q", got, "10")
+	}
+	if nuclei.RequestTimeout != 10 {
+		t.Errorf("RequestTimeout = %d, want 10 (nuclei v3.11.1 default)", nuclei.RequestTimeout)
 	}
 
 	// Follow-redirect must NOT be present.
@@ -219,6 +228,15 @@ func TestBuildArgs(t *testing.T) {
 			t.Errorf("BuildArgs contains forbidden custom template flag %q in: %v", forbidden, args)
 		}
 	}
+}
+
+func buildArgsFlagValue(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // TestDefaultTags_NoDefaultLogin verifies that DefaultTags strictly contains only safe tags
@@ -401,6 +419,7 @@ func TestSanitizeMatchedAt(t *testing.T) {
 		name     string
 		input    string
 		expected string
+		wantErr  bool
 	}{
 		{
 			name:     "clean url untouched",
@@ -432,14 +451,181 @@ func TestSanitizeMatchedAt(t *testing.T) {
 			input:    "http://user:pass123@api.example.com:8443/v1/auth?API_SECRET=s3cr3t&PASSWORD=pwd&PASSWD=p1&auth_code=c0de&sid=s99&signature=sig99&page=2#token-fragment",
 			expected: "http://api.example.com:8443/v1/auth?API_SECRET=REDACTED&PASSWD=REDACTED&PASSWORD=REDACTED&auth_code=REDACTED&page=2&sid=REDACTED&signature=REDACTED",
 		},
+		{
+			name:    "invalid url is rejected instead of returned raw",
+			input:   "http://example.com/\x00",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := nuclei.SanitizeMatchedAt(tc.input)
+			got, err := nuclei.SanitizeMatchedAt(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("SanitizeMatchedAt(%q) returned %q, want error", tc.input, got)
+				}
+				if got != "" {
+					t.Errorf("SanitizeMatchedAt(%q) returned raw value %q on error, want empty", tc.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SanitizeMatchedAt(%q) unexpected error: %v", tc.input, err)
+			}
 			if got != tc.expected {
 				t.Errorf("SanitizeMatchedAt(%q)\n  got:  %q\n  want: %q", tc.input, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestParseLine_InvalidMatchedAtRejected(t *testing.T) {
+	line := `{"template-id":"invalid-url","info":{"name":"Invalid URL","severity":"info"},"matched-at":"http://example.com/\u0000","host":"example.com"}`
+	f, err := nuclei.ParseLine(line)
+	if err == nil {
+		t.Fatalf("expected error for unparsable matched-at, got finding: %+v", f)
+	}
+	if f != nil {
+		t.Errorf("expected nil finding on invalid matched-at, got %+v", f)
+	}
+}
+
+func TestRedactEvidence_RawSecretPatterns(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		forbidden []string
+	}{
+		{
+			name:      "aws access key",
+			input:     "found AKIAIOSFODNN7EXAMPLE and ASIA1234567890ABCDEF in response",
+			forbidden: []string{"AKIAIOSFODNN7EXAMPLE", "ASIA1234567890ABCDEF"},
+		},
+		{
+			name:      "jwt",
+			input:     "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			forbidden: []string{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
+		},
+		{
+			name:      "github tokens",
+			input:     "ghp_1234567890abcdefghijklmnopqrstuvwxyz gho_1234567890abcdefghijklmnopqrstuvwxyz ghu_1234567890abcdefghijklmnopqrstuvwxyz ghs_1234567890abcdefghijklmnopqrstuvwxyz ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+			forbidden: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"},
+		},
+		{
+			name:      "slack tokens",
+			input:     "xoxb-123456789012-abcdefghij xoxp-123456789012-abcdefghij xoxa-123456789012-abcdefghij xoxr-123456789012-abcdefghij xoxs-123456789012-abcdefghij",
+			forbidden: []string{"xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-"},
+		},
+		{
+			name:      "private key block",
+			input:     "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretmaterial\n-----END RSA PRIVATE KEY-----",
+			forbidden: []string{"MIIEowIBAAKCAQEAsecretmaterial", "BEGIN RSA PRIVATE KEY"},
+		},
+		{
+			name:      "secret key value pairs",
+			input:     "client_secret=abc123&secret_key='def 456' access_key=ghi789 private_key=jkl012 secret=mno345",
+			forbidden: []string{"abc123", "def 456", "ghi789", "jkl012", "mno345"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nuclei.RedactEvidence(tc.input)
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("RedactEvidence(%q) = %q, want [REDACTED] marker", tc.input, got)
+			}
+			for _, forbidden := range tc.forbidden {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("RedactEvidence(%q) leaked %q in %q", tc.input, forbidden, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactEvidence_NegativeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "plain text", input: "This is an ordinary finding about a missing security header."},
+		{name: "aws template name", input: "template: aws-access-key-exposure"},
+		{name: "github template name", input: "template: github-token-leak"},
+		{name: "jwt template name", input: "template: jwt-detection"},
+		{name: "slack template name", input: "template: slack-token-check"},
+		{name: "secret template name", input: "template: secret-detection"},
+		{name: "prose with secret word", input: "The secret is safe and no client_secret was found."},
+		{name: "short aws key", input: "AKIA123456789012345 is not a valid access key"},
+		{name: "short github token", input: "ghp_short is not a token"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nuclei.RedactEvidence(tc.input)
+			if got != tc.input {
+				t.Errorf("RedactEvidence(%q) = %q, want unchanged", tc.input, got)
+			}
+		})
+	}
+}
+
+func TestRedactEvidence_UTF8Boundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantLen int
+	}{
+		{
+			name:    "three-byte rune ends exactly at byte 2048",
+			input:   strings.Repeat("a", 2045) + "€",
+			wantLen: 2048,
+		},
+		{
+			name:    "three-byte rune crosses byte 2048",
+			input:   strings.Repeat("a", 2046) + "€",
+			wantLen: 2046,
+		},
+		{
+			name:    "two-byte rune crosses byte 2048",
+			input:   strings.Repeat("a", 2047) + "é",
+			wantLen: 2047,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nuclei.RedactEvidence(tc.input)
+			if len(got) > 2048 {
+				t.Errorf("evidence length = %d, want <= 2048", len(got))
+			}
+			if len(got) != tc.wantLen {
+				t.Errorf("evidence length = %d, want %d", len(got), tc.wantLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("evidence is not valid UTF-8")
+			}
+		})
+	}
+}
+
+func TestRedactEvidence_Idempotent(t *testing.T) {
+	inputs := []string{
+		"Authorization: Bearer abc123 and password: secretpassword",
+		"found AKIAIOSFODNN7EXAMPLE in response",
+		"jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		"ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+		"xoxb-123456789012-abcdefghij",
+		"-----BEGIN PRIVATE KEY-----\nMIIEsecret\n-----END PRIVATE KEY-----",
+		"client_secret=abc123 secret=def456",
+		strings.Repeat("a", 2046) + "€",
+	}
+
+	for _, input := range inputs {
+		once := nuclei.RedactEvidence(input)
+		twice := nuclei.RedactEvidence(once)
+		if once != twice {
+			t.Errorf("redaction is not idempotent\n  once:  %q\n  twice: %q", once, twice)
+		}
 	}
 }

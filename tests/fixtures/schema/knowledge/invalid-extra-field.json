@@ -1,0 +1,10 @@
+{
+  "template_id": "invalid-extra-field",
+  "title": "Field tambahan",
+  "meaning": "Fixture memuat properti yang tidak diizinkan.",
+  "impact": "Fixture harus gagal karena skema melarang properti tambahan.",
+  "verify_steps": ["Periksa skema"],
+  "concept": "Properti tambahan",
+  "lang": "id",
+  "unexpected": true
+}

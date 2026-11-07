@@ -493,6 +493,93 @@ class TestIngestorMalformedAndInvalidLinesHandling:
         assert len(hosts) == 1
         assert hosts[0].hostname == "survivor.example.com"
 
+    def test_invalid_matched_at_findings_are_skipped_and_counted(self, db: Database) -> None:
+        run_id = "01J00000000000000000000019"
+        invalid_urls = ["http://[::1", "http://exa mple.com:99999"]
+        lines = [
+            make_jsonl_line("run_start", run_id=run_id, data={"target": "example.com"}),
+            make_jsonl_line(
+                "host",
+                run_id=run_id,
+                data={"hostname": "good.example.com"},
+            ),
+            make_jsonl_line(
+                "finding",
+                run_id=run_id,
+                data={
+                    "id": "finding_bad_ipv6",
+                    "hostname": "good.example.com",
+                    "template_id": "tpl-bad-1",
+                    "name": "Bad IPv6 URL",
+                    "severity": "low",
+                    "matched_at": invalid_urls[0],
+                    "evidence": "bad ipv6 evidence",
+                },
+            ),
+            make_jsonl_line(
+                "finding",
+                run_id=run_id,
+                data={
+                    "id": "finding_good",
+                    "hostname": "good.example.com",
+                    "template_id": "tpl-good",
+                    "name": "Valid Finding",
+                    "severity": "medium",
+                    "matched_at": "https://good.example.com/vuln?token=secret123",
+                    "evidence": "valid evidence",
+                },
+            ),
+            make_jsonl_line(
+                "finding",
+                run_id=run_id,
+                data={
+                    "id": "finding_bad_port",
+                    "hostname": "good.example.com",
+                    "template_id": "tpl-bad-2",
+                    "name": "Bad Port URL",
+                    "severity": "low",
+                    "matched_at": invalid_urls[1],
+                    "evidence": "bad port evidence",
+                },
+            ),
+            make_jsonl_line("run_end", run_id=run_id, data={"status": "complete"}),
+        ]
+
+        res = Ingestor(db=db, run_id=run_id).ingest_lines(lines)
+
+        assert res.status == "complete"
+        assert res.findings_count == 1
+        assert res.errors_count == 2
+        assert [err.error_type for err in res.errors] == [
+            "invalid_matched_at",
+            "invalid_matched_at",
+        ]
+        assert [err.line_number for err in res.errors] == [3, 5]
+
+        findings = db.get_findings_for_run(run_id)
+        assert [finding.id for finding in findings] == ["finding_good"]
+        assert findings[0].matched_at == "https://good.example.com/vuln?token=REDACTED"
+
+        observations = db.get_finding_obs_for_run(run_id)
+        assert [obs.finding_id for obs in observations] == ["finding_good"]
+
+        conn = db.connect()
+        try:
+            persisted_urls = [row[0] for row in conn.execute("SELECT matched_at FROM findings")]
+            persisted_evidence = [
+                row[0] for row in conn.execute("SELECT evidence FROM finding_obs")
+            ]
+        finally:
+            conn.close()
+
+        for invalid_url in invalid_urls:
+            assert invalid_url not in persisted_urls
+            assert all(
+                invalid_url not in value
+                for value in persisted_evidence
+                if value is not None
+            )
+
     def test_callback_isolated_from_invalid_lines_and_called_for_valid(self, db: Database) -> None:
         run_id = "01J00000000000000000000014"
         lines = [

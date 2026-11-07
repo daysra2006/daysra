@@ -25,6 +25,7 @@ def fake_engine_script(tmp_path: Path) -> Path:
         #!/usr/bin/env python3
         import sys
         import json
+        import os
 
         args = sys.argv[1:]
         if not args:
@@ -117,6 +118,17 @@ def fake_engine_script(tmp_path: Path) -> Path:
                 print(json.dumps(ev_end), flush=True)
                 sys.exit(0)
 
+            if target == "duplicate-hosts.example.com":
+                ev_start = {"schema_version": "1", "type": "run_start", "run_id": run_id, "ts": "2026-11-05T10:00:00Z", "data": {"target": target}}
+                print(json.dumps(ev_start), flush=True)
+                base_hosts = ["beta.example.com", "alpha.example.com", "gamma.example.com", "delta.example.com"]
+                for h in base_hosts * 50:
+                    ev_host = {"schema_version": "1", "type": "host", "run_id": run_id, "ts": "2026-11-05T10:00:01Z", "data": {"hostname": h, "sources": ["fake_src"]}}
+                    print(json.dumps(ev_host), flush=True)
+                ev_end = {"schema_version": "1", "type": "run_end", "run_id": run_id, "ts": "2026-11-05T10:00:03Z", "data": {"status": "complete"}}
+                print(json.dumps(ev_end), flush=True)
+                sys.exit(0)
+
             # Normal success recon
             ev_start = {"schema_version": "1", "type": "run_start", "run_id": run_id, "ts": "2026-11-05T10:00:00Z", "data": {"target": target, "tool_versions": {"subfinder": "v2.17.0"}}}
             ev_host1 = {"schema_version": "1", "type": "host", "run_id": run_id, "ts": "2026-11-05T10:00:01Z", "data": {"hostname": "sub1.example.com", "sources": ["fake_src"], "ips": ["192.0.2.1"]}}
@@ -139,6 +151,11 @@ def fake_engine_script(tmp_path: Path) -> Path:
 
             # Read hostnames from stdin
             stdin_hosts = sys.stdin.read().strip().split()
+
+            capture_path = os.environ.get("DAYSRA_FAKE_STDIN_OUT")
+            if capture_path:
+                with open(capture_path, "w", encoding="utf-8") as capture_file:
+                    capture_file.write("\\n".join(stdin_hosts))
 
             if target == "fail-probe.example.com":
                 sys.stderr.write("probe failed unexpectedly\\n")
@@ -397,6 +414,37 @@ class TestReconExecutionWithFakeEngine:
         assert latest_run is not None
         assert len(db.get_hosts_for_run(latest_run.run_id)) == 0
         assert len(db.get_http_obs_for_run(latest_run.run_id)) == 0
+
+    def test_recon_deduplicates_hosts_and_preserves_discovery_order(
+        self,
+        test_env: tuple[Path, Database],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        capture_path = tmp_path / "probe-stdin.txt"
+        monkeypatch.setenv("DAYSRA_FAKE_STDIN_OUT", str(capture_path))
+        console = Console(quiet=True)
+
+        exit_code = run_recon(
+            domain="duplicate-hosts.example.com",
+            scope=str(scope_file),
+            no_probe=False,
+            console=console,
+        )
+
+        assert exit_code == 0
+        probe_hosts = capture_path.read_text(encoding="utf-8").splitlines()
+        assert probe_hosts == [
+            "beta.example.com",
+            "alpha.example.com",
+            "gamma.example.com",
+            "delta.example.com",
+        ]
+
+        latest_run = db.get_latest_run()
+        assert latest_run is not None
+        assert len(db.get_hosts_for_run(latest_run.run_id)) == 4
 
     def test_recon_show_command_flag(
         self,
