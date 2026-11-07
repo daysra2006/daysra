@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from daysra.core.sanitizer import sanitize_terminal_text
+from daysra.knowledge import FindingExplanation, KnowledgeBase, build_explanations
 from daysra.store.db import FindingRecord, HostObsRecord, HttpObsRecord, RunRecord
 
 SEVERITY_ORDER: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
@@ -293,4 +294,79 @@ def render_scan_summary(
     console.print(table)
 
 
-__all__ = ["SEVERITY_ORDER", "render_recon_summary", "render_scan_summary"]
+def _render_explanation_block(explanation: FindingExplanation, console: Console) -> None:
+    body = Text()
+    body.append("Apa ini: ", style="bold")
+    body.append(Text(_sanitize_terminal_text(explanation.title)))
+    body.append("\n")
+    body.append(Text(_sanitize_terminal_text(explanation.meaning)))
+    body.append("\n\n")
+    body.append("Kenapa penting: ", style="bold")
+    body.append(Text(_sanitize_terminal_text(explanation.impact)))
+    body.append("\n\n")
+    body.append("Langkah berikutnya:", style="bold")
+    if explanation.verify_steps:
+        for index, step in enumerate(explanation.verify_steps, start=1):
+            body.append(f"\n  {index}. ")
+            body.append(Text(_sanitize_terminal_text(step)))
+    else:
+        body.append("\n  (tidak ada langkah spesifik)")
+    body.append("\n\n")
+    body.append("Konsep untuk dipelajari: ", style="bold")
+    body.append(Text(_sanitize_terminal_text(explanation.concept)))
+    body.append("\n\n")
+    body.append("Matched At:", style="bold")
+    shown = explanation.matched_at[:5]
+    for matched_at in shown:
+        body.append("\n  - ")
+        body.append(Text(_sanitize_terminal_text(matched_at)))
+    remaining = len(explanation.matched_at) - len(shown)
+    if remaining > 0:
+        body.append(f"\n  dan {remaining} lainnya")
+
+    title = Text("Penjelasan: ")
+    title.append(_sanitize_terminal_text(explanation.template_id), style="bold")
+    title.append(" — ")
+    title.append(_sanitize_terminal_text(explanation.name))
+    title.append(f" ({_sanitize_terminal_text(explanation.severity)})")
+
+    subtitle = Text("[fallback generik]", style="yellow") if explanation.is_fallback else None
+    console.print(
+        Panel(
+            body,
+            title=title,
+            subtitle=subtitle,
+            border_style="yellow" if explanation.is_fallback else "cyan",
+        )
+    )
+
+
+def render_finding_explanations(
+    findings: Sequence[FindingRecord],
+    knowledge: KnowledgeBase,
+    console: Console | None = None,
+) -> None:
+    """Render one Simple Mode explanation block per unique template_id.
+
+    Narrative text comes from the validated offline knowledge base, or from a
+    deterministic severity fallback. Tool facts (template_id, name, severity,
+    CVE, matched_at) are never rewritten. Untrusted text is sanitized and all
+    text is rendered through ``Text`` so Rich markup is not interpreted.
+    """
+    console = console or Console()
+    explanations = build_explanations(findings, knowledge)
+    if not explanations:
+        return
+
+    console.print()
+    console.print("[bold]Penjelasan Temuan[/bold]")
+    for explanation in explanations:
+        _render_explanation_block(explanation, console)
+
+
+__all__ = [
+    "SEVERITY_ORDER",
+    "render_finding_explanations",
+    "render_recon_summary",
+    "render_scan_summary",
+]

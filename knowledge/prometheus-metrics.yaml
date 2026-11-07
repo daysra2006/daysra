@@ -1,0 +1,15 @@
+template_id: prometheus-metrics
+title: "Endpoint metrik Prometheus dapat diakses"
+meaning: >-
+  Halaman metrik yang mengikuti format Prometheus dapat dijangkau dari
+  jaringan yang dipindai.
+impact: >-
+  Metrik dapat mengungkap informasi operasional seperti nama layanan, jumlah
+  permintaan, atau status internal. Dampaknya bergantung pada isi metrik dan
+  siapa yang seharusnya boleh mengaksesnya.
+verify_steps:
+  - "Buka endpoint metrik yang dilaporkan di browser atau klien HTTP biasa."
+  - "Periksa apakah endpoint tersebut memang perlu dapat diakses dari jaringan saat ini."
+  - "Tinjau apakah metrik memuat informasi sensitif yang tidak diperlukan untuk pemantauan."
+concept: "Eksposur telemetri dan prinsip akses minimum ke sistem pemantauan."
+lang: id

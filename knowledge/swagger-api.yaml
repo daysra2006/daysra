@@ -1,0 +1,15 @@
+template_id: swagger-api
+title: "Dokumentasi API publik dapat diakses"
+meaning: >-
+  Endpoint dokumentasi API, misalnya spesifikasi OpenAPI atau Swagger, dapat
+  dijangkau dari jaringan yang dipindai.
+impact: >-
+  Dokumentasi API dapat mengungkap daftar endpoint, parameter, dan struktur
+  data yang membantu pemetaan permukaan serangan. Dampaknya bergantung pada
+  apakah dokumentasi tersebut memang dimaksudkan untuk publik.
+verify_steps:
+  - "Buka URL yang dilaporkan di browser pada lingkungan yang sah."
+  - "Periksa apakah dokumentasi memang disediakan untuk publik atau seharusnya dibatasi."
+  - "Tinjau apakah dokumentasi memuat informasi internal yang tidak perlu diungkapkan."
+concept: "Manajemen permukaan serangan API dan prinsip least privilege."
+lang: id

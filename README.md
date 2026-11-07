@@ -85,6 +85,30 @@ daysra scan example.com --scope scope.yaml --include-tags tech,exposure
 
 Tanpa host hidup, Daysra menyuruh menjalankan `daysra recon example.com` lebih dulu dan tidak menjalankan engine. Run scan disimpan dengan target domain yang sudah lolos preflight scope, dan `--from-run` ditolak bila target run sumber tidak sama dengan domain yang diminta. Jika `--include-tags` memuat `default-login`, Daysra meminta konfirmasi mengetik kata `default-login` pada terminal; tanpa konfirmasi tag itu dibuang. Flag `--accept-default-login` meneruskan tag tersebut tanpa bertanya.
 
+#### Menambah entri knowledge base
+
+Simple Mode mengambil penjelasan temuan dari `knowledge/*.yaml`. Satu file boleh berisi satu entri atau daftar entri, dan setiap entri divalidasi terhadap `schema/knowledge.v1.json` saat `daysra scan` memuat knowledge base sebelum engine dijalankan.
+
+```yaml
+template_id: swagger-api
+title: "Dokumentasi API publik dapat diakses"
+meaning: "Endpoint dokumentasi API dapat dijangkau dari jaringan yang dipindai."
+impact: "Dokumentasi dapat membantu pemetaan permukaan serangan."
+verify_steps:
+  - "Buka URL yang dilaporkan di browser."
+  - "Periksa apakah dokumentasi memang dimaksudkan untuk publik."
+concept: "Manajemen permukaan serangan API."
+lang: id
+```
+
+Validasi semua entri tanpa menjalankan pemindaian:
+
+```sh
+PYTHONPATH=src .venv/bin/python -c "from daysra.knowledge import load_knowledge_base; kb = load_knowledge_base(); print(f'{len(kb)} entri valid')"
+```
+
+Jika `template_id` tidak punya entri, Daysra memakai fallback generik berdasarkan severity dan menandainya `[fallback generik]` di output. Entri yang tidak valid membuat `daysra scan` berhenti dengan error yang menyebut file dan field.
+
 ### 5. Buat Laporan Markdown (`daysra report`)
 Hasilkan laporan ringkas hasil recon dalam format Markdown:
 

@@ -58,6 +58,7 @@ Tanggal: 2026-11-05
 - [x] Langkah 3: Penyimpanan Python di `daysra.store` (`findings`, `finding_obs`, migrasi `PRAGMA user_version = 3`, ingestor event `finding`, deduplikasi temuan)
 - [ ] Langkah 4: CLI `daysra scan DOMAIN`, Simple Mode temuan kerentanan, dan seksi temuan laporan Markdown
   - [x] Langkah 4a: CLI `daysra scan` (preflight scope, URL host hidup dari SQLite, `run_stage`, ingest run baru, ringkasan temuan per severity)
+  - [x] Langkah 4b: knowledge base dan Simple Mode temuan
 - [ ] Langkah 5: Penutup M3, pembaruan dokumentasi, dan verifikasi akhir suite pengujian
 
 ## Catatan M3
