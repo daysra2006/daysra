@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,96 @@ const (
 	initialScanBufferSize = 64 * 1024
 	maxScanTokenSize      = 4 * 1024 * 1024
 )
+
+// toolCommand is the canonical representation of one tool invocation. The
+// execution subcommands and show-command both build it through the helpers
+// below, so the displayed argv can never drift from the executed argv.
+type toolCommand struct {
+	Tool   string
+	Argv   []string
+	Target string
+}
+
+// buildReconCommand normalizes the target, enforces scope (fail-closed), and
+// builds the Subfinder argv exactly as the recon stage executes it.
+func buildReconCommand(s scope.Scope, target string) (toolCommand, error) {
+	normalizedTarget, err := normalize.Hostname(target)
+	if err != nil {
+		return toolCommand{}, fmt.Errorf("invalid target %q: %w", target, err)
+	}
+	if !s.Allows(normalizedTarget) {
+		return toolCommand{}, fmt.Errorf("target %q is out of scope", normalizedTarget)
+	}
+	return toolCommand{
+		Tool:   "subfinder",
+		Argv:   subfinder.BuildArgs(normalizedTarget, s.MaxRate),
+		Target: normalizedTarget,
+	}, nil
+}
+
+// buildProbeCommand builds the httpx argv. Hosts are supplied via stdin, so no
+// target appears in the argv.
+func buildProbeCommand(s scope.Scope) toolCommand {
+	return toolCommand{
+		Tool: "httpx",
+		Argv: httpx.BuildArgs(s.MaxRate),
+	}
+}
+
+type scanCommand struct {
+	toolCommand
+	HasDefaultLogin bool
+	RejectedTags    []string
+}
+
+// buildScanCommand resolves tags onto the safe defaults and builds the Nuclei
+// argv exactly as the scan stage executes it.
+func buildScanCommand(s scope.Scope, includeTags string) scanCommand {
+	var reqTags []string
+	if includeTags != "" {
+		for _, t := range strings.Split(includeTags, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				reqTags = append(reqTags, t)
+			}
+		}
+	}
+
+	activeTags, hasDefaultLogin, rejectedTags := nuclei.ResolveTags(reqTags)
+
+	maxRate := s.MaxRate
+	if maxRate <= 0 {
+		maxRate = 10
+	}
+
+	return scanCommand{
+		toolCommand: toolCommand{
+			Tool: "nuclei",
+			Argv: nuclei.BuildArgs(
+				maxRate,
+				10, // concurrency capped at 10 for safety
+				activeTags,
+				nuclei.ExcludedTags,
+				[]string{"info", "low", "medium", "high", "critical"},
+			),
+		},
+		HasDefaultLogin: hasDefaultLogin,
+		RejectedTags:    rejectedTags,
+	}
+}
+
+// validateTargetInScope normalizes an optional target and enforces scope.
+// Unknown or unparseable input is always rejected (Rule 15).
+func validateTargetInScope(s scope.Scope, target string) error {
+	normalizedTarget, err := normalize.Hostname(target)
+	if err != nil {
+		return fmt.Errorf("invalid target %q: %w", target, err)
+	}
+	if !s.Allows(normalizedTarget) {
+		return fmt.Errorf("target %q is out of scope", normalizedTarget)
+	}
+	return nil
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -58,6 +149,8 @@ func runWithIOStdin(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return runProbe(ctx, args[1:], stdin, stdout, stderr)
 	case "scan":
 		return runScan(ctx, args[1:], stdin, stdout, stderr)
+	case "show-command":
+		return runShowCommand(args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -70,6 +163,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       daysra-engine recon --target <target> --scope <file> --run-id <run-id>")
 	fmt.Fprintln(w, "       daysra-engine probe --scope <file> --run-id <run-id>")
 	fmt.Fprintln(w, "       daysra-engine scan --scope <file> --run-id <run-id> [--include-tags <tags>]")
+	fmt.Fprintln(w, "       daysra-engine show-command <recon|probe|scan> --scope <file> [--target <target>] [--include-tags <tags>]")
 }
 
 func runCheckScope(args []string, stderr io.Writer) int {
@@ -109,6 +203,106 @@ func runCheckScope(args []string, stderr io.Writer) int {
 	return 0
 }
 
+type showCommandOutput struct {
+	SchemaVersion string   `json:"schema_version"`
+	Tool          string   `json:"tool"`
+	Argv          []string `json:"argv"`
+}
+
+// runShowCommand prints the argv that the matching execution subcommand would
+// use, without running any tool and without reading stdin. It shares the same
+// command builders as the execution path so there is a single source of truth.
+func runShowCommand(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "show-command: missing subcommand (recon|probe|scan)")
+		return 2
+	}
+
+	kind := args[0]
+	if kind != "recon" && kind != "probe" && kind != "scan" {
+		fmt.Fprintf(stderr, "show-command: unknown subcommand %q\n", kind)
+		return 2
+	}
+
+	fs := flag.NewFlagSet("show-command "+kind, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var scopePath, target, includeTags string
+	fs.StringVar(&scopePath, "scope", "", "path to scope.yaml")
+	fs.StringVar(&target, "target", "", "target domain")
+	fs.StringVar(&includeTags, "include-tags", "", "comma-separated additional template tags")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		fmt.Fprintf(stderr, "show-command: flag error: %v\n", err)
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "show-command: unexpected arguments: %v\n", fs.Args())
+		return 2
+	}
+	if scopePath == "" {
+		fmt.Fprintln(stderr, "show-command: --scope is required")
+		return 2
+	}
+	if kind != "scan" && includeTags != "" {
+		fmt.Fprintln(stderr, "show-command: --include-tags is only valid for scan")
+		return 2
+	}
+
+	s, err := scope.Load(scopePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "show-command: failed to load scope: %v\n", err)
+		return 2
+	}
+
+	var cmd toolCommand
+	switch kind {
+	case "recon":
+		if target == "" {
+			fmt.Fprintln(stderr, "show-command: recon requires --target")
+			return 2
+		}
+		cmd, err = buildReconCommand(s, target)
+		if err != nil {
+			fmt.Fprintf(stderr, "show-command: %v\n", err)
+			return 2
+		}
+	case "probe":
+		if target != "" {
+			if err := validateTargetInScope(s, target); err != nil {
+				fmt.Fprintf(stderr, "show-command: %v\n", err)
+				return 2
+			}
+		}
+		cmd = buildProbeCommand(s)
+	case "scan":
+		if target != "" {
+			if err := validateTargetInScope(s, target); err != nil {
+				fmt.Fprintf(stderr, "show-command: %v\n", err)
+				return 2
+			}
+		}
+		scan := buildScanCommand(s, includeTags)
+		if scan.HasDefaultLogin {
+			fmt.Fprintln(stderr, "WARNING: tag 'default-login' attempts default credentials; requires explicit user awareness/confirmation")
+		}
+		for _, rej := range scan.RejectedTags {
+			fmt.Fprintf(stderr, "WARNING: tag %q is intrusive/forbidden and was ignored\n", rej)
+		}
+		cmd = scan.toolCommand
+	}
+
+	out := showCommandOutput{
+		SchemaVersion: "1",
+		Tool:          cmd.Tool,
+		Argv:          cmd.Argv,
+	}
+	if err := json.NewEncoder(stdout).Encode(out); err != nil {
+		fmt.Fprintf(stderr, "show-command: failed to write JSON: %v\n", err)
+		return 2
+	}
+	return 0
+}
+
 func runRecon(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if ctx == nil {
 		ctx = context.Background()
@@ -138,16 +332,12 @@ func runRecon(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 
-	normalizedTarget, err := normalize.Hostname(target)
+	reconCommand, err := buildReconCommand(s, target)
 	if err != nil {
-		fmt.Fprintf(stderr, "recon: invalid target %q: %v\n", target, err)
+		fmt.Fprintf(stderr, "recon: %v\n", err)
 		return 2
 	}
-
-	if !s.Allows(normalizedTarget) {
-		fmt.Fprintf(stderr, "recon: target %q is out of scope\n", normalizedTarget)
-		return 2
-	}
+	normalizedTarget := reconCommand.Target
 
 	// Resolve subfinder binary
 	binaryPath := subfinderBin
@@ -190,7 +380,7 @@ func runRecon(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	var outOfScopeCount int
 	var corruptLinesCount int
 
-	subfinderArgs := subfinder.BuildArgs(normalizedTarget, s.MaxRate)
+	subfinderArgs := reconCommand.Argv
 
 	timeout := time.Duration(s.Timeout) * time.Second
 	if timeout <= 0 {
@@ -392,7 +582,7 @@ func runProbe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return 0
 	}
 
-	httpxArgs := httpx.BuildArgs(s.MaxRate)
+	httpxArgs := buildProbeCommand(s).Argv
 
 	timeout := time.Duration(s.Timeout) * time.Second
 	if timeout <= 0 {
@@ -616,45 +806,24 @@ func runScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	// Resolve template tags: defaults to tech, exposure, misconfig.
 	// Users can request additional tags with --include-tags.
 	// Intrusive tags are strictly rejected, and default-login emits an explicit warning.
-	var reqTags []string
-	if includeTags != "" {
-		for _, t := range strings.Split(includeTags, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				reqTags = append(reqTags, t)
-			}
-		}
-	}
-
-	activeTags, hasDefaultLogin, rejectedTags := nuclei.ResolveTags(reqTags)
-	if hasDefaultLogin {
+	// The argv comes from buildScanCommand so show-command and execution agree.
+	scanPlan := buildScanCommand(s, includeTags)
+	if scanPlan.HasDefaultLogin {
 		fmt.Fprintln(stderr, "WARNING: tag 'default-login' attempts default credentials; requires explicit user awareness/confirmation")
 		_ = emitter.EmitWarning(map[string]any{
 			"message": "tag 'default-login' attempts default credentials; requires explicit user awareness/confirmation",
 		})
 	}
-	for _, rej := range rejectedTags {
+	for _, rej := range scanPlan.RejectedTags {
 		fmt.Fprintf(stderr, "WARNING: tag %q is intrusive/forbidden and was ignored\n", rej)
 		_ = emitter.EmitWarning(map[string]any{
 			"message": fmt.Sprintf("tag %q is intrusive/forbidden and was ignored", rej),
 		})
 	}
 
-	// Build nuclei args: use scope rate, safe active tags and severity.
 	// -duc and -ni are always included (Rule 18). The tool's -timeout is a
 	// per-request timeout from the adapter constant, never scope.Timeout.
-	maxRate := s.MaxRate
-	if maxRate <= 0 {
-		maxRate = 10
-	}
-
-	nucleiArgs := nuclei.BuildArgs(
-		maxRate,
-		10, // concurrency capped at 10 for safety
-		activeTags,
-		nuclei.ExcludedTags,
-		[]string{"info", "low", "medium", "high", "critical"},
-	)
+	nucleiArgs := scanPlan.Argv
 
 	stdinPayload := strings.Join(inScopeURLs, "\n") + "\n"
 

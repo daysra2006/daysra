@@ -33,6 +33,41 @@ def fake_engine_script(tmp_path: Path) -> Path:
 
         cmd = args[0]
 
+        if cmd == "show-command":
+            kind = args[1] if len(args) > 1 else ""
+            if kind == "recon":
+                payload = {
+                    "schema_version": "1",
+                    "tool": "subfinder",
+                    "argv": [
+                        "-d", "example.com", "-silent", "-oJ", "-cs",
+                        "-timeout", "30", "-rl", "50",
+                    ],
+                }
+            elif kind == "probe":
+                payload = {
+                    "schema_version": "1",
+                    "tool": "httpx",
+                    "argv": [
+                        "-silent", "-json", "-sc", "-title", "-td", "-cl",
+                        "-timeout", "10", "-rl", "50",
+                    ],
+                }
+            else:
+                payload = {
+                    "schema_version": "1",
+                    "tool": "nuclei",
+                    "argv": [
+                        "-j", "-silent", "-nc", "-duc", "-ni",
+                        "-timeout", "10", "-s", "info,low,medium,high,critical",
+                        "-tags", "tech,exposure,misconfig",
+                        "-etags", "intrusive,fuzz,fuzzing,dos",
+                        "-rl", "50", "-c", "10",
+                    ],
+                }
+            print(json.dumps(payload), flush=True)
+            sys.exit(0)
+
         if cmd == "check-scope":
             # parse --target
             target = ""
@@ -462,8 +497,10 @@ class TestReconExecutionWithFakeEngine:
 
         assert exit_code == 0
         output = console.export_text()
-        assert "Subfinder tool syntax: subfinder -d example.com" in output
-        assert "httpx tool syntax: httpx" in output
+        assert "Perintah subfinder: subfinder -d example.com" in output
+        assert "Perintah httpx: httpx" in output
+        assert "--target example.com" in output
+        assert "-timeout 600" not in output
 
     def test_recon_raw_mode_streams_jsonl(
         self,
