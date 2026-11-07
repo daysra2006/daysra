@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"daysra-engine/internal/adapters/httpx"
 	"daysra-engine/internal/adapters/nuclei"
 	"daysra-engine/internal/adapters/subfinder"
+	"daysra-engine/internal/scope"
 )
 
 func TestMainVersion(t *testing.T) {
@@ -2028,4 +2030,367 @@ func TestScanTimeoutIndependentOfURLCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// show-command contract tests
+// ---------------------------------------------------------------------------
+
+type showCommandRecord struct {
+	SchemaVersion int      `json:"schema_version"`
+	Tool          string   `json:"tool"`
+	Argv          []string `json:"argv"`
+}
+
+func runShowCommandForTest(t *testing.T, args []string) (showCommandRecord, string, int) {
+	t.Helper()
+	var stdoutBuf, stderrBuf bytes.Buffer
+	code := runWithIO(context.Background(), args, &stdoutBuf, &stderrBuf)
+
+	var record showCommandRecord
+	if stdoutBuf.Len() > 0 {
+		dec := json.NewDecoder(strings.NewReader(stdoutBuf.String()))
+		if err := dec.Decode(&record); err != nil {
+			t.Fatalf("show-command stdout is not valid JSON: %v\n%s", err, stdoutBuf.String())
+		}
+		var extra any
+		if err := dec.Decode(&extra); err == nil {
+			t.Fatalf("show-command must emit exactly one JSON object, got trailing data: %s", stdoutBuf.String())
+		}
+	}
+	return record, stderrBuf.String(), code
+}
+
+func loadShowCommandSchema(t *testing.T) map[string]any {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "schema", "show-command.v1.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read show-command schema: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("show-command schema is not valid JSON: %v", err)
+	}
+	return schema
+}
+
+// validateShowCommandSchema checks the emitted object against the constraints
+// declared in schema/show-command.v1.json. Python has a full JSON Schema
+// validator; here we assert the same declared constraints directly.
+func validateShowCommandSchema(t *testing.T, record showCommandRecord) {
+	t.Helper()
+	schema := loadShowCommandSchema(t)
+
+	requiredRaw, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatal("schema is missing required array")
+	}
+	required := make([]string, 0, len(requiredRaw))
+	for _, item := range requiredRaw {
+		required = append(required, item.(string))
+	}
+	if len(required) != 3 || !slices.Contains(required, "schema_version") ||
+		!slices.Contains(required, "tool") || !slices.Contains(required, "argv") {
+		t.Fatalf("unexpected required fields in schema: %v", required)
+	}
+
+	props := schema["properties"].(map[string]any)
+	wantVersion := props["schema_version"].(map[string]any)["const"]
+	if float64(record.SchemaVersion) != wantVersion.(float64) {
+		t.Errorf("schema_version = %d, want %v", record.SchemaVersion, wantVersion)
+	}
+
+	toolEnum := props["tool"].(map[string]any)["enum"].([]any)
+	toolOK := false
+	for _, item := range toolEnum {
+		if record.Tool == item.(string) {
+			toolOK = true
+			break
+		}
+	}
+	if !toolOK {
+		t.Errorf("tool %q is not in schema enum %v", record.Tool, toolEnum)
+	}
+
+	argvSpec := props["argv"].(map[string]any)
+	if argvSpec["type"] != "array" {
+		t.Errorf("schema argv type = %v, want array", argvSpec["type"])
+	}
+	if len(record.Argv) == 0 {
+		t.Error("argv must contain at least one item (schema minItems 1)")
+	}
+}
+
+// TestShowCommandMatchesBuildArgs proves the displayed argv is built by the
+// same adapter BuildArgs functions that the execution path uses.
+func TestShowCommandMatchesBuildArgs(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantTool string
+		wantArgv []string
+	}{
+		{
+			name:     "recon",
+			args:     []string{"show-command", "recon", "--scope", scopePath, "--target", "example.com"},
+			wantTool: "subfinder",
+			wantArgv: subfinder.BuildArgs("example.com", 50),
+		},
+		{
+			name:     "probe",
+			args:     []string{"show-command", "probe", "--scope", scopePath},
+			wantTool: "httpx",
+			wantArgv: httpx.BuildArgs(50),
+		},
+		{
+			name:     "scan",
+			args:     []string{"show-command", "scan", "--scope", scopePath},
+			wantTool: "nuclei",
+			wantArgv: nuclei.BuildArgs(
+				50,
+				10,
+				nuclei.DefaultTags,
+				nuclei.ExcludedTags,
+				[]string{"info", "low", "medium", "high", "critical"},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record, stderr, code := runShowCommandForTest(t, tt.args)
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+			}
+			if record.Tool != tt.wantTool {
+				t.Errorf("tool = %q, want %q", record.Tool, tt.wantTool)
+			}
+			if !slices.Equal(record.Argv, tt.wantArgv) {
+				t.Errorf("argv = %v, want %v", record.Argv, tt.wantArgv)
+			}
+			validateShowCommandSchema(t, record)
+		})
+	}
+}
+
+// TestShowCommandOmitsRateLimitWhenNonPositive proves the -rl flag is omitted
+// when max_rate is non-positive for subfinder/httpx, while scan keeps its
+// execution-path fallback of 10.
+func TestShowCommandOmitsRateLimitWhenNonPositive(t *testing.T) {
+	s := scope.Scope{Allow: []string{"example.com"}, MaxRate: 0}
+
+	reconCmd, err := buildReconCommand(s, "example.com")
+	if err != nil {
+		t.Fatalf("buildReconCommand: %v", err)
+	}
+	if slices.Contains(reconCmd.Argv, "-rl") {
+		t.Errorf("recon argv must omit -rl when max_rate is 0: %v", reconCmd.Argv)
+	}
+
+	probeCmd := buildProbeCommand(s)
+	if slices.Contains(probeCmd.Argv, "-rl") {
+		t.Errorf("probe argv must omit -rl when max_rate is 0: %v", probeCmd.Argv)
+	}
+
+	scanCmd := buildScanCommand(s, "")
+	if !slices.Contains(scanCmd.Argv, "-rl") {
+		t.Errorf("scan argv must keep the execution-path fallback -rl: %v", scanCmd.Argv)
+	}
+	idx := slices.Index(scanCmd.Argv, "-rl")
+	if idx < 0 || idx+1 >= len(scanCmd.Argv) || scanCmd.Argv[idx+1] != "10" {
+		t.Errorf("scan -rl value must fall back to 10: %v", scanCmd.Argv)
+	}
+}
+
+// TestShowCommandNormalizesTarget proves uppercase, trailing dots, and IDN
+// targets reach argv in the same canonical form as the execution path.
+func TestShowCommandNormalizesTarget(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "xn--mnchen-3ya.de"}, nil, 600)
+
+	tests := []struct {
+		name       string
+		target     string
+		wantTarget string
+	}{
+		{name: "uppercase and trailing dot", target: "Example.COM.", wantTarget: "example.com"},
+		{name: "IDN punycode", target: "münchen.de", wantTarget: "xn--mnchen-3ya.de"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record, stderr, code := runShowCommandForTest(t, []string{
+				"show-command", "recon", "--scope", scopePath, "--target", tt.target,
+			})
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+			}
+			idx := slices.Index(record.Argv, "-d")
+			if idx < 0 || idx+1 >= len(record.Argv) {
+				t.Fatalf("argv is missing -d: %v", record.Argv)
+			}
+			if record.Argv[idx+1] != tt.wantTarget {
+				t.Errorf("-d target = %q, want %q", record.Argv[idx+1], tt.wantTarget)
+			}
+		})
+	}
+}
+
+// TestShowCommandScanIncludeTags proves --include-tags is resolved with
+// ResolveTags, so safe extra tags are added and intrusive tags are rejected.
+func TestShowCommandScanIncludeTags(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+
+	record, stderr, code := runShowCommandForTest(t, []string{
+		"show-command", "scan", "--scope", scopePath,
+		"--include-tags", "default-login,tech,intrusive",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	activeTags, hasDefaultLogin, rejectedTags := nuclei.ResolveTags([]string{"default-login", "tech", "intrusive"})
+	if !hasDefaultLogin {
+		t.Fatal("expected default-login to be flagged")
+	}
+	if !slices.Contains(rejectedTags, "intrusive") {
+		t.Fatalf("expected intrusive to be rejected, got %v", rejectedTags)
+	}
+	wantArgv := nuclei.BuildArgs(50, 10, activeTags, nuclei.ExcludedTags,
+		[]string{"info", "low", "medium", "high", "critical"})
+	if !slices.Equal(record.Argv, wantArgv) {
+		t.Errorf("argv = %v, want %v", record.Argv, wantArgv)
+	}
+	if !strings.Contains(stderr, "default-login") {
+		t.Errorf("expected default-login warning on stderr, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "intrusive") {
+		t.Errorf("expected intrusive rejection warning on stderr, got %q", stderr)
+	}
+}
+
+// TestShowCommandRejectsOutOfScopeTarget proves the new subcommand is
+// fail-closed: an out-of-scope target is rejected and emits no JSON.
+func TestShowCommandRejectsOutOfScopeTarget(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+
+	tests := [][]string{
+		{"show-command", "recon", "--scope", scopePath, "--target", "other-domain.com"},
+		{"show-command", "probe", "--scope", scopePath, "--target", "other-domain.com"},
+		{"show-command", "scan", "--scope", scopePath, "--target", "other-domain.com"},
+		{"show-command", "recon", "--scope", scopePath, "--target", "bad host"},
+		{"show-command", "nope", "--scope", scopePath},
+		{"show-command", "recon", "--scope", scopePath},
+	}
+
+	for _, args := range tests {
+		t.Run(strings.Join(args[1:], "_"), func(t *testing.T) {
+			var stdoutBuf, stderrBuf bytes.Buffer
+			code := runWithIO(context.Background(), args, &stdoutBuf, &stderrBuf)
+			if code != 2 {
+				t.Errorf("exit code = %d, want 2; stderr: %s", code, stderrBuf.String())
+			}
+			if stdoutBuf.Len() != 0 {
+				t.Errorf("expected no stdout on rejection, got %q", stdoutBuf.String())
+			}
+		})
+	}
+}
+
+// TestShowCommandMatchesActualExecution proves there is one source of argv:
+// the fake tools record what recon/probe/scan actually received, and those
+// bytes must equal show-command output for the same inputs.
+func TestShowCommandMatchesActualExecution(t *testing.T) {
+	t.Run("recon", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeSubfinder(t, "record-args")
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIO(context.Background(), []string{
+			"recon", "--target", "Example.COM.", "--scope", scopePath,
+			"--run-id", "01JSHOWCOMMANDRECON000000", "--subfinder-bin", fakeBin,
+		}, &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("recon exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+		executed := strings.Split(strings.TrimSpace(readFileForTest(t, argsFile)), "\n")
+
+		record, stderr, code := runShowCommandForTest(t, []string{
+			"show-command", "recon", "--scope", scopePath, "--target", "Example.COM.",
+		})
+		if code != 0 {
+			t.Fatalf("show-command exit code = %d, want 0; stderr: %s", code, stderr)
+		}
+		if !slices.Equal(record.Argv, executed) {
+			t.Errorf("show-command argv = %v, executed argv = %v", record.Argv, executed)
+		}
+	})
+
+	t.Run("probe", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeHttpx(t, "record-args")
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIOStdin(context.Background(), []string{
+			"probe", "--scope", scopePath, "--run-id", "01JSHOWCOMMANDPROBE000000",
+			"--target", "example.com", "--httpx-bin", fakeBin,
+		}, strings.NewReader("example.com\n"), &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("probe exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+		executed := strings.Split(strings.TrimSpace(readFileForTest(t, argsFile)), "\n")
+
+		record, stderr, code := runShowCommandForTest(t, []string{
+			"show-command", "probe", "--scope", scopePath, "--target", "example.com",
+		})
+		if code != 0 {
+			t.Fatalf("show-command exit code = %d, want 0; stderr: %s", code, stderr)
+		}
+		if !slices.Equal(record.Argv, executed) {
+			t.Errorf("show-command argv = %v, executed argv = %v", record.Argv, executed)
+		}
+	})
+
+	t.Run("scan", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 600)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeNuclei(t, "record-args")
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIOStdin(context.Background(), []string{
+			"scan", "--scope", scopePath, "--run-id", "01JSHOWCOMMANDSCAN0000000",
+			"--include-tags", "tech", "--nuclei-bin", fakeBin,
+		}, strings.NewReader("https://example.com\n"), &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("scan exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+		executed := strings.Split(strings.TrimSpace(readFileForTest(t, argsFile)), "\n")
+
+		record, stderr, code := runShowCommandForTest(t, []string{
+			"show-command", "scan", "--scope", scopePath, "--target", "example.com",
+			"--include-tags", "tech",
+		})
+		if code != 0 {
+			t.Fatalf("show-command exit code = %d, want 0; stderr: %s", code, stderr)
+		}
+		if !slices.Equal(record.Argv, executed) {
+			t.Errorf("show-command argv = %v, executed argv = %v", record.Argv, executed)
+		}
+	})
+}
+
+func readFileForTest(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", path, err)
+	}
+	return string(data)
 }

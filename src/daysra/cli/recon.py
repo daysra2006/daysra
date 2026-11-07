@@ -7,6 +7,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.text import Text
 
+from daysra.cli.show_command import ShowCommandError, fetch_show_command, print_tool_command
 from daysra.cli.stages import report_stage_failure, run_stage
 from daysra.core.config import find_engine_binary, validate_config_permissions
 from daysra.core.contracts import Event
@@ -78,21 +79,46 @@ def run_recon(
     # 5. Generate run ID (ULID)
     run_id = generate_ulid()
 
-    # 6. Show command if requested
+    # 6. Show command if requested. The argv comes from the engine so the
+    # displayed tool command can never drift from the executed one.
     if show_command:
-        console.print(
-            f"[dim]Engine command:[/dim] {engine_bin} recon --target {domain} --scope {scope_path} --run-id {run_id}"
-        )
-        console.print(
-            f"[dim]Subfinder tool syntax:[/dim] subfinder -d {domain} -silent -oJ -cs -rl 50 -timeout 600"
-        )
-        if not no_probe:
-            console.print(
-                f"[dim]Engine command (probe):[/dim] {engine_bin} probe --scope {scope_path} --run-id {run_id}"
+        try:
+            subfinder_command = fetch_show_command(
+                engine_bin,
+                "recon",
+                scope_path,
+                target=domain,
             )
-            console.print(
-                "[dim]httpx tool syntax:[/dim] httpx -silent -json -sc -title -td -cl -rl 50 -timeout 600"
+            httpx_command = (
+                None
+                if no_probe
+                else fetch_show_command(
+                    engine_bin,
+                    "probe",
+                    scope_path,
+                    target=domain,
+                )
             )
+        except ShowCommandError as err:
+            console.print(Text(f"Error menampilkan perintah tool: {err}", style="bold red"))
+            return err.exit_code
+
+        engine_recon = Text("Engine command: ", style="dim")
+        engine_recon.append(
+            f"{engine_bin} recon --target {sanitize_terminal_text(domain)} "
+            f"--scope {scope_path} --run-id {run_id}"
+        )
+        console.print(engine_recon)
+        print_tool_command(console, subfinder_command)
+
+        if httpx_command is not None:
+            engine_probe = Text("Engine command (probe): ", style="dim")
+            engine_probe.append(
+                f"{engine_bin} probe --scope {scope_path} --run-id {run_id} "
+                f"--target {sanitize_terminal_text(domain)}"
+            )
+            console.print(engine_probe)
+            print_tool_command(console, httpx_command)
 
     db = Database(get_db_path())
     collected_lines: list[str] = []

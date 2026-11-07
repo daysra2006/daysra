@@ -72,6 +72,7 @@ Tanggal: 2026-11-07
 - Tes lifecycle penuh (fake engine) mencakup recon → scan → report, deduplikasi temuan, dan memastikan evidence tidak muncul di terminal maupun laporan.
 - Verifikasi akhir M3: seluruh tes Go hijau (395 `=== RUN`, termasuk subtest), 375 tes Python lulus, `go vet` dan `gofmt -l` bersih, `ruff` bersih.
 - Temuan yang belum diperbaiki: paket wheel `daysra` belum memuat direktori `knowledge/` dan `schema/`, sehingga pemasangan non-editable kehilangan knowledge base dan skema validasi (lihat laporan Langkah 5).
+- Perbaikan M3.1: --show-command bersumber dari engine (argv tool dibangun oleh BuildArgs yang sama, bukan string tetap di Python).
 
 ## Catatan M3
 

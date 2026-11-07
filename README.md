@@ -66,7 +66,7 @@ daysra recon example.com --scope scope.yaml --no-probe
 
 **Pilihan Opsi:**
 - `--no-probe`: Melewati tahap probing httpx dan hanya menjalankan enumerasi subdomain.
-- `--show-command`: Menampilkan sintaks perintah engine dan tool asli (`subfinder`, `httpx`) agar pengguna dapat mempelajari sintaks aslinya.
+- `--show-command`: Menampilkan sintaks perintah engine dan tool asli (`subfinder`, `httpx`, `nuclei`) agar pengguna dapat mempelajari sintaks aslinya. Argumen tool diambil dari subcommand `daysra-engine show-command`, sehingga `-timeout`, `-rl`, tag, dan severity selalu sama dengan yang benar-benar dieksekusi.
 - `--raw`: Menampilkan aliran event JSONL mentah ke stdout tanpa format tabel Simple Mode.
 - `--scope <path>`: Menentukan jalur file scope YAML khusus (default: `scope.yaml`).
 

@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from daysra.cli.show_command import ShowCommandError, fetch_show_command, print_tool_command
 from daysra.cli.stages import report_stage_failure, run_stage
 from daysra.core.config import find_engine_binary, validate_config_permissions
 from daysra.core.contracts import Event
@@ -276,7 +277,20 @@ def run_scan(
         scan_cmd.extend(["--include-tags", ",".join(approved_tags)])
 
     if show_command:
+        try:
+            nuclei_command = fetch_show_command(
+                engine_bin,
+                "scan",
+                scope_path,
+                target=domain,
+                include_tags=",".join(approved_tags) if approved_tags else None,
+            )
+        except ShowCommandError as err:
+            console.print(Text(f"Error menampilkan perintah tool: {err}", style="bold red"))
+            return err.exit_code
+
         console.print(f"[dim]Engine command (scan):[/dim] {escape(' '.join(scan_cmd))}")
+        print_tool_command(console, nuclei_command)
 
     finding_events = 0
 
