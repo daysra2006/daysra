@@ -1,0 +1,14 @@
+template_id: tech-detect
+title: "Teknologi web terdeteksi"
+meaning: >-
+  Pemindaian menemukan petunjuk tentang teknologi yang digunakan oleh aplikasi
+  web, misalnya pustaka atau kerangka kerja pada halaman.
+impact: >-
+  Informasi teknologi membantu pemetaan dan dapat memengaruhi prioritas
+  pemeliharaan. Temuan ini sendiri bukan bukti kerentanan.
+verify_steps:
+  - "Buka halaman yang sama dan bandingkan petunjuk teknologi yang terlihat."
+  - "Cocokkan dengan inventaris teknologi yang dikelola oleh tim aplikasi."
+  - "Gunakan informasi ini untuk memeriksa pembaruan, bukan untuk menyimpulkan adanya kerentanan."
+concept: "Deteksi teknologi (fingerprinting) dan manajemen inventaris perangkat lunak."
+lang: id

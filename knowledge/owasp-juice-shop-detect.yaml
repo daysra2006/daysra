@@ -1,0 +1,15 @@
+template_id: owasp-juice-shop-detect
+title: "Aplikasi web yang dikenal terdeteksi"
+meaning: >-
+  Pemindaian menemukan petunjuk yang cocok dengan aplikasi web yang dikenal,
+  dalam hal ini lingkungan latihan OWASP Juice Shop.
+impact: >-
+  Deteksi aplikasi yang dikenal membantu memahami konteks target. Dampak
+  keamanannya bergantung pada apakah aplikasi tersebut memang disengaja untuk
+  publik atau latihan.
+verify_steps:
+  - "Buka halaman yang dilaporkan dan periksa apakah aplikasi tersebut memang target yang dimaksud."
+  - "Pastikan aplikasi hanya dapat diakses di lingkungan yang sah."
+  - "Tinjau konfigurasi dan pembaruan aplikasi sesuai kebijakan pemiliknya."
+concept: "Identifikasi aplikasi dan pemisahan lingkungan latihan dari produksi."
+lang: id

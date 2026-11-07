@@ -865,3 +865,174 @@ class TestScanOutputSecurity:
         assert "\x1b[32m" not in output
         assert "[bold red]Evil Name[/bold red]" in output
         assert "[link]x[/link]" in output
+
+
+class TestScanKnowledgePreflight:
+    def test_invalid_knowledge_base_blocks_every_engine_call(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "broken.yaml").write_text(
+            "template_id: [unclosed\n", encoding="utf-8"
+        )
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            knowledge_dir=knowledge_dir,
+            console=console,
+        )
+
+        assert exit_code != 0
+        output = console.export_text()
+        assert "Error knowledge base" in output
+        assert "broken.yaml" in output
+        assert _read_engine_calls(tmp_path) == []
+
+    def test_missing_knowledge_directory_uses_generic_fallback(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setenv(
+            "DAYSRA_FAKE_FINDINGS",
+            json.dumps(
+                [
+                    _finding(
+                        finding_id="f-fallback",
+                        template_id="t-without-entry",
+                        name="Temuan Tanpa Entri",
+                        severity="low",
+                    )
+                ]
+            ),
+        )
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            knowledge_dir=tmp_path / "absent-knowledge",
+            console=console,
+        )
+
+        assert exit_code == 0
+        output = console.export_text()
+        assert "[fallback generik]" in output
+        assert "Apa ini:" in output
+
+
+class TestScanKnowledgeIntegration:
+    def test_scan_renders_knowledge_block_for_known_template(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setenv(
+            "DAYSRA_FAKE_FINDINGS",
+            json.dumps(
+                [
+                    _finding(
+                        finding_id="f-swagger",
+                        template_id="swagger-api",
+                        name="Public Swagger API - Detect",
+                        severity="info",
+                    )
+                ]
+            ),
+        )
+        console = _recording_console()
+
+        exit_code = run_scan(domain="example.com", scope=str(scope_file), console=console)
+
+        assert exit_code == 0
+        output = console.export_text()
+        assert "Apa ini:" in output
+        assert "Dokumentasi API publik dapat diakses" in output
+        assert "[fallback generik]" not in output
+
+    def test_scan_groups_findings_with_the_same_template_id(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setenv(
+            "DAYSRA_FAKE_FINDINGS",
+            json.dumps(
+                [
+                    _finding(
+                        finding_id="f-swagger-a",
+                        template_id="swagger-api",
+                        name="Public Swagger API - Detect",
+                        severity="info",
+                        matched_at="https://sub1.example.com/api-docs",
+                    ),
+                    _finding(
+                        finding_id="f-swagger-b",
+                        template_id="swagger-api",
+                        name="Public Swagger API - Detect",
+                        severity="info",
+                        matched_at="https://sub2.example.com/api-docs",
+                    ),
+                ]
+            ),
+        )
+        console = _recording_console()
+
+        exit_code = run_scan(domain="example.com", scope=str(scope_file), console=console)
+
+        assert exit_code == 0
+        output = console.export_text()
+        assert output.count("Penjelasan: swagger-api") == 1
+        assert "https://sub1.example.com/api-docs" in output
+        assert "https://sub2.example.com/api-docs" in output
+
+    def test_raw_mode_omits_explanation_blocks(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setenv(
+            "DAYSRA_FAKE_FINDINGS",
+            json.dumps(
+                [
+                    _finding(
+                        finding_id="f-raw-knowledge",
+                        template_id="swagger-api",
+                        name="Public Swagger API - Detect",
+                        severity="info",
+                    )
+                ]
+            ),
+        )
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            raw=True,
+            console=None,
+        )
+
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Apa ini" not in captured.out
+        assert "Apa ini" not in captured.err
+        for line in captured.out.splitlines():
+            if line.strip():
+                json.loads(line)

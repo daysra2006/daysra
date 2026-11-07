@@ -16,7 +16,8 @@ from daysra.core.contracts import Event
 from daysra.core.sanitizer import sanitize_terminal_text
 from daysra.core.ulid import generate_ulid
 from daysra.ingest import Ingestor
-from daysra.simple.summary import render_scan_summary
+from daysra.knowledge import KnowledgeError, load_knowledge_base
+from daysra.simple.summary import render_finding_explanations, render_scan_summary
 from daysra.store.db import Database, get_db_path
 
 DEFAULT_LOGIN_TAG = "default-login"
@@ -139,6 +140,7 @@ def run_scan(
     from_run: str | None = None,
     raw: bool = False,
     show_command: bool = False,
+    knowledge_dir: str | Path | None = None,
     console: Console | None = None,
 ) -> int:
     """Scan live HTTP URLs for a domain with Nuclei via the Go engine."""
@@ -156,6 +158,13 @@ def run_scan(
     scope_path = Path(scope).resolve()
     if not scope_path.is_file():
         console.print(f"[bold red]Error:[/bold red] File scope tidak ditemukan: {scope_path}")
+        return 2
+
+    # 2b. Load and validate the offline knowledge base before any engine call.
+    try:
+        knowledge = load_knowledge_base(knowledge_dir)
+    except KnowledgeError as err:
+        console.print(Text(f"Error knowledge base: {err}", style="bold red"))
         return 2
 
     # 3. Locate daysra-engine binary
@@ -331,6 +340,7 @@ def run_scan(
         if run_record:
             findings = db.get_findings_for_run_by_severity(run_id)
             render_scan_summary(run_record, findings, console=console)
+            render_finding_explanations(findings, knowledge, console=console)
 
     return final_exit_code
 

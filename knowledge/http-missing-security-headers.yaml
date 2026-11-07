@@ -1,0 +1,15 @@
+template_id: http-missing-security-headers
+title: "Header keamanan HTTP tidak lengkap"
+meaning: >-
+  Respons HTTP tidak memuat satu atau lebih header keamanan yang umum
+  direkomendasikan, seperti proteksi terhadap framing atau penyadapan konten.
+impact: >-
+  Ketiadaan header tertentu dapat mengurangi pertahanan berlapis di browser.
+  Dampak nyatanya bergantung pada konteks aplikasi dan header lain yang sudah
+  ada.
+verify_steps:
+  - "Buka halaman yang sama dan periksa header respons melalui alat pengembang browser."
+  - "Bandingkan header yang ada dengan kebijakan keamanan aplikasi."
+  - "Diskusikan dengan pemilik aplikasi sebelum mengubah konfigurasi produksi."
+concept: "Header keamanan HTTP dan pertahanan berlapis di sisi browser."
+lang: id
