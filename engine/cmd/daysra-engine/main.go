@@ -204,7 +204,7 @@ func runCheckScope(args []string, stderr io.Writer) int {
 }
 
 type showCommandOutput struct {
-	SchemaVersion int      `json:"schema_version"`
+	SchemaVersion string   `json:"schema_version"`
 	Tool          string   `json:"tool"`
 	Argv          []string `json:"argv"`
 }
@@ -292,7 +292,7 @@ func runShowCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	out := showCommandOutput{
-		SchemaVersion: 1,
+		SchemaVersion: "1",
 		Tool:          cmd.Tool,
 		Argv:          cmd.Argv,
 	}

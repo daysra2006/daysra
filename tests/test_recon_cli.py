@@ -37,7 +37,7 @@ def fake_engine_script(tmp_path: Path) -> Path:
             kind = args[1] if len(args) > 1 else ""
             if kind == "recon":
                 payload = {
-                    "schema_version": 1,
+                    "schema_version": "1",
                     "tool": "subfinder",
                     "argv": [
                         "-d", "example.com", "-silent", "-oJ", "-cs",
@@ -46,7 +46,7 @@ def fake_engine_script(tmp_path: Path) -> Path:
                 }
             elif kind == "probe":
                 payload = {
-                    "schema_version": 1,
+                    "schema_version": "1",
                     "tool": "httpx",
                     "argv": [
                         "-silent", "-json", "-sc", "-title", "-td", "-cl",
@@ -55,7 +55,7 @@ def fake_engine_script(tmp_path: Path) -> Path:
                 }
             else:
                 payload = {
-                    "schema_version": 1,
+                    "schema_version": "1",
                     "tool": "nuclei",
                     "argv": [
                         "-j", "-silent", "-nc", "-duc", "-ni",

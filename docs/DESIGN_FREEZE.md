@@ -119,6 +119,8 @@ daysra-engine recon --target example.com --scope scope.yaml --run-id <ulid>
 - Exit code: `0` sukses, `2` pelanggaran scope, `3` tool tidak ditemukan atau versi tidak didukung, `4` hasil parsial, `130` dibatalkan.
 - Menerima SIGINT: berhenti rapi, mengirim `run_end` dengan status `cancelled` atau `partial`.
 
+`daysra-engine show-command <recon|probe|scan>` adalah subcommand metadata non-run yang mencetak satu objek JSON sesuai `schema/show-command.v1.json`, bukan event.
+
 ## 7. Scope dan keamanan operasional
 
 `scope.yaml` wajib untuk setiap run:

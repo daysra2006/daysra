@@ -11,7 +11,7 @@ from rich.text import Text
 
 from daysra.core.sanitizer import sanitize_terminal_text
 
-SHOW_COMMAND_SCHEMA_VERSION = 1
+SHOW_COMMAND_SCHEMA_VERSION = "1"
 VALID_SHOW_COMMAND_TOOLS = frozenset({"subfinder", "httpx", "nuclei"})
 
 

@@ -87,7 +87,7 @@ def fake_engine_script(tmp_path: Path) -> Path:
                 argv = ["\\x1b[31mred\\x1b[0m", "[/dim]literal", "\\x1b]0;pwn\\x07"]
 
             print(json.dumps({
-                "schema_version": 1,
+                "schema_version": "1",
                 "tool": tool,
                 "argv": argv,
             }), flush=True)
@@ -256,7 +256,7 @@ class TestShowCommandSchema:
         tool: str,
     ) -> None:
         payload = {
-            "schema_version": 1,
+            "schema_version": "1",
             "tool": tool,
             "argv": ["-d", "example.com"],
         }
@@ -267,12 +267,12 @@ class TestShowCommandSchema:
         show_command_schema: dict[str, object],
     ) -> None:
         broken_payloads = [
-            {"schema_version": "1", "tool": "subfinder", "argv": ["-d", "example.com"]},
-            {"schema_version": 2, "tool": "subfinder", "argv": ["-d", "example.com"]},
-            {"schema_version": 1, "tool": "nmap", "argv": ["-d", "example.com"]},
-            {"schema_version": 1, "tool": "subfinder", "argv": []},
-            {"schema_version": 1, "tool": "subfinder"},
-            {"schema_version": 1, "tool": "subfinder", "argv": ["-d", 1]},
+            {"schema_version": 1, "tool": "subfinder", "argv": ["-d", "example.com"]},
+            {"schema_version": "2", "tool": "subfinder", "argv": ["-d", "example.com"]},
+            {"schema_version": "1", "tool": "nmap", "argv": ["-d", "example.com"]},
+            {"schema_version": "1", "tool": "subfinder", "argv": []},
+            {"schema_version": "1", "tool": "subfinder"},
+            {"schema_version": "1", "tool": "subfinder", "argv": ["-d", 1]},
         ]
         for payload in broken_payloads:
             with pytest.raises(jsonschema.ValidationError):

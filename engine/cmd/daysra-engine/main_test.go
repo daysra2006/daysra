@@ -2037,7 +2037,7 @@ func TestScanTimeoutIndependentOfURLCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type showCommandRecord struct {
-	SchemaVersion int      `json:"schema_version"`
+	SchemaVersion string   `json:"schema_version"`
 	Tool          string   `json:"tool"`
 	Argv          []string `json:"argv"`
 }
@@ -2097,8 +2097,8 @@ func validateShowCommandSchema(t *testing.T, record showCommandRecord) {
 
 	props := schema["properties"].(map[string]any)
 	wantVersion := props["schema_version"].(map[string]any)["const"]
-	if float64(record.SchemaVersion) != wantVersion.(float64) {
-		t.Errorf("schema_version = %d, want %v", record.SchemaVersion, wantVersion)
+	if record.SchemaVersion != wantVersion.(string) {
+		t.Errorf("schema_version = %q, want %v", record.SchemaVersion, wantVersion)
 	}
 
 	toolEnum := props["tool"].(map[string]any)["enum"].([]any)
