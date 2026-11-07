@@ -126,14 +126,15 @@ def report(
         typer.Option("-o", "--output", help="Jalur file untuk menyimpan laporan Markdown (default: cetak ke layar)"),
     ] = None,
 ) -> None:
-    """Generate Markdown report for a reconnaissance run."""
+    """Generate Markdown report for a reconnaissance or scan run."""
+    from daysra.knowledge import KnowledgeError
     from daysra.report.generator import generate_report_for_run
     from daysra.store.db import Database, get_db_path
 
     db = Database(get_db_path())
     try:
         report_md = generate_report_for_run(db, run_id=run)
-    except ValueError as err:
+    except (KnowledgeError, ValueError) as err:
         typer.echo(f"Error: {err}", err=True)
         raise typer.Exit(1)
 
