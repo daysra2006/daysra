@@ -250,6 +250,18 @@ def _include_tags(args: list[str]) -> str | None:
     return None
 
 
+def _assert_no_empty_target_runs(db: Database) -> None:
+    """Assert no run row was left with a null or empty target."""
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT run_id, target FROM runs WHERE target IS NULL OR target = ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == []
+
+
 class _FakeStdin:
     def __init__(self, *, tty: bool, answer: str = "") -> None:
         self._tty = tty
@@ -642,6 +654,83 @@ class TestScanTargetPersistence:
 
         assert exit_code == 0
         assert "tidak cocok" not in console.export_text()
+
+    def test_partial_scan_run_keeps_target_and_leaves_no_empty_target_run(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db, target="example.com")
+        monkeypatch.setenv("DAYSRA_FAKE_SCAN_MODE", "partial")
+        console = _recording_console()
+
+        exit_code = run_scan(domain="example.com", scope=str(scope_file), console=console)
+
+        assert exit_code == 4
+        latest_run = db.get_latest_run()
+        assert latest_run is not None
+        assert latest_run.status == "partial"
+        assert latest_run.target == "example.com"
+        _assert_no_empty_target_runs(db)
+
+    def test_cancelled_scan_run_keeps_target_and_leaves_no_empty_target_run(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db, target="example.com")
+
+        def fake_run_stage(command: list[str], **kwargs: object) -> StageResult:
+            run_id = command[command.index("--run-id") + 1]
+            run_start = json.dumps(
+                {
+                    "schema_version": "1",
+                    "type": "run_start",
+                    "run_id": run_id,
+                    "ts": "2026-11-07T10:00:00Z",
+                    "data": {"tool_versions": {"nuclei": "v3.11.1"}},
+                }
+            )
+            return StageResult(
+                exit_code=130,
+                cancelled=True,
+                has_run_end=False,
+                stderr_history=(),
+                lines=(run_start,),
+            )
+
+        monkeypatch.setattr(scan_module, "run_stage", fake_run_stage)
+        console = _recording_console()
+
+        exit_code = run_scan(domain="example.com", scope=str(scope_file), console=console)
+
+        assert exit_code == 130
+        latest_run = db.get_latest_run()
+        assert latest_run is not None
+        assert latest_run.status == "cancelled"
+        assert latest_run.target == "example.com"
+        _assert_no_empty_target_runs(db)
+
+    def test_aborted_scan_run_without_run_end_keeps_target(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db, target="example.com")
+        monkeypatch.setenv("DAYSRA_FAKE_SCAN_MODE", "fail")
+        console = _recording_console()
+
+        exit_code = run_scan(domain="example.com", scope=str(scope_file), console=console)
+
+        assert exit_code == 4
+        latest_run = db.get_latest_run()
+        assert latest_run is not None
+        assert latest_run.status == "partial"
+        assert latest_run.target == "example.com"
+        _assert_no_empty_target_runs(db)
 
 
 class TestScanFromRunValidation:
