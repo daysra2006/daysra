@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import stat
 import textwrap
 from pathlib import Path
@@ -9,8 +10,10 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+from daysra.cli import stages
 from daysra.cli.app import app
 from daysra.cli.recon import run_recon
+from daysra.cli.stages import run_stage
 from daysra.store.db import Database
 
 
@@ -874,4 +877,197 @@ class TestOutputSecuritySubprocessStderr:
         hosts = db.get_hosts_for_run(latest_run.run_id)
         assert len(hosts) == 2
         assert {h.hostname for h in hosts} == {"sub1.example.com", "sub2.example.com"}
+
+
+class TestStageHelper:
+    """Validate the reusable engine-stage helper in isolation."""
+
+    def test_stage_success_collects_events_and_run_end(
+        self,
+        fake_engine_script: Path,
+    ) -> None:
+        run_id = "01J00000000000000000000021"
+        console = Console(record=True, color_system=None)
+        events = []
+
+        result = run_stage(
+            [
+                str(fake_engine_script),
+                "recon",
+                "--target",
+                "example.com",
+                "--scope",
+                "scope.yaml",
+                "--run-id",
+                run_id,
+            ],
+            stage_name="recon",
+            initial_description="[1/2] recon",
+            update_description=lambda: "[1/2] recon updated",
+            on_event=events.append,
+            console=console,
+            raw=False,
+        )
+
+        assert result.spawn_failed is False
+        assert result.exit_code == 0
+        assert result.cancelled is False
+        assert result.has_run_end is True
+        assert result.stderr_history == ()
+        assert len(result.lines) == 4
+        assert [event.type for event in events] == [
+            "run_start",
+            "host",
+            "host",
+            "run_end",
+        ]
+
+    def test_stage_nonzero_exit_returns_stderr_and_notifies_callback(
+        self,
+        fake_engine_script: Path,
+    ) -> None:
+        run_id = "01J00000000000000000000022"
+        console = Console(record=True, color_system=None)
+        events = []
+        failures: list[tuple[int, tuple[str, ...]]] = []
+
+        result = run_stage(
+            [
+                str(fake_engine_script),
+                "recon",
+                "--target",
+                "fail-recon.example.com",
+                "--scope",
+                "scope.yaml",
+                "--run-id",
+                run_id,
+            ],
+            stage_name="recon",
+            initial_description="[1/2] recon",
+            update_description=lambda: "[1/2] recon updated",
+            on_event=events.append,
+            console=console,
+            raw=False,
+            on_nonzero_exit=lambda code, history: failures.append((code, history)),
+        )
+
+        assert result.exit_code == 4
+        assert result.cancelled is False
+        assert result.has_run_end is False
+        assert result.stderr_history == ("recon failed abruptly",)
+        assert [event.type for event in events] == ["run_start", "host"]
+        assert failures == [(4, ("recon failed abruptly",))]
+
+    def test_stage_delivers_stdin_payload_to_engine(
+        self,
+        fake_engine_script: Path,
+    ) -> None:
+        run_id = "01J00000000000000000000023"
+        console = Console(record=True, color_system=None)
+        events = []
+
+        result = run_stage(
+            [
+                str(fake_engine_script),
+                "probe",
+                "--scope",
+                "scope.yaml",
+                "--run-id",
+                run_id,
+                "--target",
+                "example.com",
+            ],
+            stage_name="probe",
+            initial_description="[2/2] probe",
+            update_description=lambda: "[2/2] probe updated",
+            on_event=events.append,
+            console=console,
+            raw=False,
+            stdin_payload="sub1.example.com\nsub2.example.com\n",
+        )
+
+        assert result.exit_code == 0
+        assert result.has_run_end is True
+        assert [event.type for event in events] == [
+            "run_start",
+            "http",
+            "http",
+            "run_end",
+        ]
+        probed_hosts = [
+            event.data["hostname"] for event in events if event.type == "http"
+        ]
+        assert probed_hosts == ["sub1.example.com", "sub2.example.com"]
+
+    def test_stage_keyboard_interrupt_cancels_and_signals_child(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class FakeStdout:
+            def __init__(self) -> None:
+                self.raised = False
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if not self.raised:
+                    self.raised = True
+                    raise KeyboardInterrupt
+                raise StopIteration
+
+            def close(self) -> None:
+                self.closed = True
+
+        class FakeStderr:
+            def __iter__(self):
+                return iter(["engine interrupted\n"])
+
+            def close(self) -> None:
+                pass
+
+        class FakeProc:
+            def __init__(self, cmd: list[str], **kwargs: object) -> None:
+                self.cmd = cmd
+                self.stdout = FakeStdout()
+                self.stderr = FakeStderr()
+                self.stdin = None
+                self.signals: list[int] = []
+                self.killed = False
+
+            def send_signal(self, sig: int) -> None:
+                self.signals.append(sig)
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 130
+
+            def kill(self) -> None:
+                self.killed = True
+
+        created: list[FakeProc] = []
+
+        def fake_popen(cmd: list[str], **kwargs: object) -> FakeProc:
+            proc = FakeProc(cmd, **kwargs)
+            created.append(proc)
+            return proc
+
+        monkeypatch.setattr(stages.subprocess, "Popen", fake_popen)
+
+        console = Console(record=True, color_system=None)
+        result = run_stage(
+            ["fake-engine", "recon"],
+            stage_name="recon",
+            initial_description="[1/2] recon",
+            update_description=lambda: "[1/2] recon updated",
+            on_event=lambda event: None,
+            console=console,
+            raw=False,
+        )
+
+        assert result.cancelled is True
+        assert result.exit_code == 130
+        assert created[0].signals == [signal.SIGINT]
+        assert created[0].killed is False
+        assert "Menerima Ctrl+C pada tahap recon" in console.export_text()
 
