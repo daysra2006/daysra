@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,54 @@ class TestDbPathAndUtils:
     )
     def test_sanitize_matched_at(self, raw_url: str, expected: str) -> None:
         assert sanitize_matched_at(raw_url) == expected
+
+
+class TestDatabasePermissions:
+    """Validate owner-only permissions for the database file, sidecars, and created directories."""
+
+    def test_new_db_file_and_created_directory_are_owner_only(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "created" / "nested" / "daysra.db"
+        Database(db_path)
+
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(db_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(db_path.parent.parent.stat().st_mode) == 0o700
+
+    def test_existing_db_permissions_are_tightened(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "existing.db"
+        Database(db_path)
+        db_path.chmod(0o644)
+
+        Database(db_path)
+
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    def test_existing_directory_permissions_are_not_changed(self, tmp_path: Path) -> None:
+        db_dir = tmp_path / "user-data"
+        db_dir.mkdir()
+        db_dir.chmod(0o750)
+        db_path = db_dir / "daysra.db"
+
+        Database(db_path)
+
+        assert stat.S_IMODE(db_dir.stat().st_mode) == 0o750
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    def test_wal_and_shm_sidecars_are_owner_only(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "wal" / "daysra.db"
+        db = Database(db_path)
+        conn = db.connect()
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS t (a INTEGER)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            conn.commit()
+
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path.with_name(f"{db_path.name}{suffix}")
+                assert sidecar.exists(), f"missing sidecar {sidecar.name}"
+                assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+        finally:
+            conn.close()
 
 
 class TestDatabaseOperations:

@@ -133,6 +133,7 @@ def run_recon(
     db = Database(get_db_path())
     collected_lines: list[str] = []
     discovered_hosts: list[str] = []
+    discovered_hosts_set: set[str] = set()
     recon_cancelled = False
 
     # 7. Tahap 1: Recon (Subfinder)
@@ -177,7 +178,8 @@ def run_recon(
             ev = validate_event(ev_data)
             if ev.type == "host":
                 h_name = str(ev.data.get("hostname", "")).strip().lower()
-                if h_name and h_name not in discovered_hosts:
+                if h_name and h_name not in discovered_hosts_set:
+                    discovered_hosts_set.add(h_name)
                     discovered_hosts.append(h_name)
             elif ev.type == "run_end":
                 recon_has_run_end = True
