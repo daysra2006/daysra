@@ -43,6 +43,7 @@
 **Konsep untuk dipelajari:** Eksposur telemetri dan prinsip akses minimum ke sistem pemantauan.
 
 **CVE:** CVE-2026-0001
+
 **Matched At:**
 
 - https://metrics.example.com/metrics

@@ -168,11 +168,11 @@ SCAN_REPORT_TEMPLATE = """# Laporan Scan DAYSRA
 {% endif %}
 
 **Konsep untuk dipelajari:** {{ explanation.concept | sanitize_text }}
+
 {% if explanation.cve %}
+**CVE:** {{ explanation.cve | join(', ') | sanitize_text }}
 
-**CVE:** {% for cve in explanation.cve %}{{ cve | sanitize_text }}{% if not loop.last %}, {% endif %}{% endfor %}
 {% endif %}
-
 **Matched At:**
 
 {% for matched_at in explanation.matched_at[:20] %}
