@@ -2,7 +2,9 @@ template_id: http-missing-security-headers
 title: "Header keamanan HTTP tidak lengkap"
 meaning: >-
   Respons HTTP tidak memuat satu atau lebih header keamanan yang umum
-  direkomendasikan, seperti proteksi terhadap framing atau penyadapan konten.
+  direkomendasikan, seperti proteksi terhadap framing atau pembatasan MIME
+  sniffing (browser menebak sendiri tipe konten respons; header seperti
+  X-Content-Type-Options dipakai untuk melarangnya).
 impact: >-
   Ketiadaan header tertentu dapat mengurangi pertahanan berlapis di browser.
   Dampak nyatanya bergantung pada konteks aplikasi dan header lain yang sudah
