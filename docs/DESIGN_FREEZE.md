@@ -219,14 +219,14 @@ Flag global: `--raw`, `--show-command`, `--scope FILE`, `--lang`.
 
 ## 14. Milestone
 
-| M | Isi | Kriteria selesai |
-| --- | --- | --- |
-| M0 | Skeleton repo, schema/, Makefile, CI lokal, `daysra --version`, `daysra doctor` | `make test` hijau |
-| M1 | Domain → scope → Subfinder → normalisasi → SQLite → laporan Markdown | Run lengkap pada domain uji, test hijau, partial/cancel teruji |
-| M2 | Adapter httpx, observasi HTTP, laporan diperkaya | Fixture dua versi httpx lolos |
-| M3 | Adapter Nuclei, finding, severity dari tool | Temuan terdedupe dengan ID stabil |
-| M4 | Simple Mode penuh: knowledge base, fallback generik, sanitasi output | `Test sanitasi dan fallback lolos` |
-| M5 | History dan diff antar-run | Diff benar pada dua run uji |
+| M | Isi | Kriteria selesai | Status |
+| --- | --- | --- | --- |
+| M0 | Skeleton repo, schema/, Makefile, CI lokal, `daysra --version`, `daysra doctor` | `make test` hijau | Selesai |
+| M1 | Domain → scope → Subfinder → normalisasi → SQLite → laporan Markdown | Run lengkap pada domain uji, test hijau, partial/cancel teruji | Selesai |
+| M2 | Adapter httpx, observasi HTTP, laporan diperkaya | Fixture dua versi httpx lolos | Selesai |
+| M3 | Adapter Nuclei, finding, severity dari tool | Temuan terdedupe dengan ID stabil | Selesai (7 November 2026) |
+| M4 | Simple Mode penuh: knowledge base, fallback generik, sanitasi output | `Test sanitasi dan fallback lolos` | Belum dimulai |
+| M5 | History dan diff antar-run | Diff benar pada dua run uji | Belum dimulai |
 
 **Estimasi:** karena ada lapisan Go↔Python, naikkan estimasi spesifikasi v0.2 sekitar 15–25%. Anggap rentang realistis ±220–310 jam dan perlakukan sebagai perkiraan kasar, bukan janji. Mulai ukur jam aktual sejak M0.
 

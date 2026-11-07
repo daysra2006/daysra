@@ -1,6 +1,6 @@
 # Progres DAYSRA
 
-Tanggal: 2026-11-05
+Tanggal: 2026-11-07
 
 ## M0
 
@@ -60,7 +60,18 @@ Tanggal: 2026-11-05
   - [x] Langkah 4a: CLI `daysra scan` (preflight scope, URL host hidup dari SQLite, `run_stage`, ingest run baru, ringkasan temuan per severity)
   - [x] Langkah 4b: knowledge base dan Simple Mode temuan
   - [x] Langkah 4c: seksi temuan laporan
-- [ ] Langkah 5: Penutup M3, pembaruan dokumentasi, dan verifikasi akhir suite pengujian
+- [x] Langkah 5: Penutup M3, pembaruan dokumentasi, dan verifikasi akhir suite pengujian
+
+### Ringkasan hasil M3
+
+- Adapter Nuclei v3.11.1 membaca stdout JSONL dan stderr terpisah, memakai `-duc`, `-ni`, tanpa follow-redirect, mengecualikan tag intrusif, serta meredaksi dan memotong evidence maksimal 2 KB.
+- Temuan disimpan di `findings` dan `finding_obs` (migrasi `PRAGMA user_version = 3`) dengan deduplikasi berdasarkan ID stabil dari tool; severity, CVE, dan `template_id` tidak pernah diubah Daysra.
+- `daysra scan` memilih URL host hidup dari run recon terbaru (atau `--from-run`), menyimpan target domain yang sudah lolos preflight, dan menangani status `complete`, `partial`, serta `cancelled`.
+- Jenis laporan ditentukan dari metadata tool yang tersimpan pada run: run dengan `nuclei` memakai layout scan (termasuk saat nol temuan), run recon tetap memakai layout reconnaissance lama.
+- Target run scan diisi Python setelah ingest dan tetap terisi pada run `partial` maupun `cancelled`; tidak ada run bertarget kosong yang tersisa.
+- Tes lifecycle penuh (fake engine) mencakup recon → scan → report, deduplikasi temuan, dan memastikan evidence tidak muncul di terminal maupun laporan.
+- Verifikasi akhir M3: seluruh tes Go hijau (395 `=== RUN`, termasuk subtest), 375 tes Python lulus, `go vet` dan `gofmt -l` bersih, `ruff` bersih.
+- Temuan yang belum diperbaiki: paket wheel `daysra` belum memuat direktori `knowledge/` dan `schema/`, sehingga pemasangan non-editable kehilangan knowledge base dan skema validasi (lihat laporan Langkah 5).
 
 ## Catatan M3
 

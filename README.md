@@ -7,14 +7,15 @@ Orkestrator pengujian keamanan otomatis berbasis niat (*intent-based*) yang dete
 - **Validasi Scope Ketat:** Engine Go mandiri sebagai satu-satunya penegak scope fail-closed.
 - **Recon Subdomain Terkendali (M1):** Eksekusi tool `subfinder` aman tanpa shell, pemisahan data stdout dan log stderr, penghentian rapi SIGINT, deduplikasi host, dan normalisasi punycode IDN.
 - **Probing HTTP Terintegrasi (M2):** Validasi host aktif via `httpx` (status code, title, teknologi, content length) dengan proteksi tanpa follow-redirect, pre & post-filter scope, dan streaming event `http`.
-- **Penyimpanan SQLite Terstruktur:** Skema relasional `runs`, `hosts`, `host_obs`, dan `http_obs` dengan migrasi otomatis `PRAGMA user_version` (Python satu-satunya penulis).
+- **Pemindaian Kerentanan Terkendali (M3):** Nuclei dijalankan pada URL host hidup dari hasil recon dengan profil tag aman, `-duc`/`-ni`, tanpa follow-redirect, deduplikasi temuan, serta evidence yang diredaksi dan dipotong sebelum disimpan.
+- **Penyimpanan SQLite Terstruktur:** Skema relasional `runs`, `hosts`, `host_obs`, `http_obs`, `findings`, dan `finding_obs` dengan migrasi otomatis `PRAGMA user_version` (Python satu-satunya penulis).
 - **Simple Mode di Terminal:** Ringkasan hasil recon seketika dengan tabel Rich:
   - Jumlah host unik dan host hidup
   - Sebaran sumber penemuan subdomain
   - Sebaran status code HTTP (2xx, 3xx, 4xx, 5xx)
   - 10 teknologi teratas
   - Daftar host dengan status menarik (3xx/4xx/5xx)
-- **Laporan Markdown:** Hasilkan laporan GitHub-Flavored Markdown via Jinja2 (`daysra report`) mencakup ringkasan run, daftar subdomain, observasi host hidup, dan tanda peringatan jika run berstatus parsial.
+- **Laporan Markdown:** Hasilkan laporan GitHub-Flavored Markdown via Jinja2 (`daysra report`) mencakup ringkasan run, daftar subdomain, observasi host hidup, tanda peringatan jika run berstatus parsial/cancelled, serta seksi temuan untuk run scan (jumlah per severity, penjelasan knowledge base, `matched_at`, dan CVE tanpa evidence).
 
 ## Instalasi & Pengembangan
 
@@ -26,6 +27,8 @@ make test
 make lint
 make doctor
 ```
+
+`make doctor` (atau `daysra doctor`) memeriksa binary engine Go serta versi `subfinder`, `httpx`, dan `nuclei` yang terpasang, lalu memastikan izin `config.toml` aman. Jalankan ini setelah instalasi dan setiap kali tool diperbarui.
 
 ## Cara Pakai Recon & Probing
 
@@ -125,7 +128,7 @@ daysra report -o laporan-recon.md
 
 #### Contoh laporan scan
 
-Untuk run yang memiliki temuan, laporan memuat seksi **Temuan**: jumlah per severity, penjelasan per `template_id` (dari knowledge base yang sama dengan terminal atau fallback generik), daftar `matched_at`, CVE dari tool, dan daftar template yang belum punya entri knowledge base. `evidence` tidak pernah dimasukkan ke laporan.
+Untuk run scan, laporan memuat seksi **Temuan**: jumlah per severity (semuanya 0 bila tidak ada temuan), penjelasan per `template_id` (dari knowledge base yang sama dengan terminal atau fallback generik), daftar `matched_at`, CVE dari tool, dan daftar template yang belum punya entri knowledge base. `evidence` tidak pernah dimasukkan ke laporan maupun keluaran terminal.
 
 ```md
 # Laporan Scan DAYSRA
@@ -167,4 +170,6 @@ Untuk run yang memiliki temuan, laporan memuat seksi **Temuan**: jumlah per seve
 - `fingerprinthub-web-fingerprints`
 ```
 
-Run recon tanpa temuan tetap memakai format laporan reconnaissance lama (ringkasan run, sebaran sumber, daftar subdomain, dan host hidup).
+Jenis laporan ditentukan dari metadata tool yang tersimpan pada run, bukan dari ada/tidaknya temuan: run yang mencatat `nuclei` memakai layout scan (termasuk saat nol temuan), sedangkan run yang mencatat `subfinder`/`httpx` memakai layout reconnaissance lama (ringkasan run, sebaran sumber, daftar subdomain, dan host hidup). Run scan tanpa temuan tetap menampilkan seksi **Temuan** dengan jumlah per severity semuanya `0` disertai peringatan bahwa hasil itu bukan jaminan target aman.
+
+Saat dijalankan, `daysra report` mencetak `Jenis run: <scan|recon> | Run ID: <id>` ke **stderr**, sehingga stdout tetap berupa Markdown bersih yang bisa di-pipe atau diarahkan ke file.
