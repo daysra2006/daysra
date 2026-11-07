@@ -2,17 +2,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from daysra.cli.app import app
 from daysra.knowledge import KnowledgeBase, KnowledgeEntry, load_knowledge_base
-from daysra.report.generator import generate_report_for_run, render_markdown_report
+from daysra.report.generator import (
+    classify_run_kind,
+    generate_report_for_run,
+    render_markdown_report,
+)
 from daysra.store.db import (
     Database,
     FindingRecord,
     HostObsRecord,
     HttpObsRecord,
     RunRecord,
+    get_db_path,
 )
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+
+NO_FINDINGS_SENTENCE = (
+    "Tidak ada temuan dari template yang dijalankan. Ini BUKAN jaminan bahwa "
+    "target aman: hanya template yang dipilih yang diperiksa."
+)
 
 
 def _finding(
@@ -71,6 +84,30 @@ def _partial_scan_run() -> RunRecord:
         scope_hash="hash_scope_scan",
         started_at="2026-11-05T11:10:00Z",
         finished_at="2026-11-05T11:10:02Z",
+        status="partial",
+        tool_versions={"nuclei": "v3.11.1"},
+    )
+
+
+def _empty_complete_scan_run() -> RunRecord:
+    return RunRecord(
+        run_id="01JTESTSCAN0000000000000003",
+        target="empty.example.com",
+        scope_hash="hash_scope_scan",
+        started_at="2026-11-05T11:20:00Z",
+        finished_at="2026-11-05T11:20:02Z",
+        status="complete",
+        tool_versions={"nuclei": "v3.11.1"},
+    )
+
+
+def _empty_partial_scan_run() -> RunRecord:
+    return RunRecord(
+        run_id="01JTESTSCAN0000000000000004",
+        target="partial-empty.example.com",
+        scope_hash="hash_scope_scan",
+        started_at="2026-11-05T11:30:00Z",
+        finished_at="2026-11-05T11:30:02Z",
         status="partial",
         tool_versions={"nuclei": "v3.11.1"},
     )
@@ -241,6 +278,18 @@ class TestScanReportGolden:
         expected = (GOLDEN_DIR / "report_scan_partial.md").read_text(encoding="utf-8")
         assert rendered == expected
 
+    def test_empty_scan_report_matches_golden(self) -> None:
+        rendered = render_markdown_report(
+            run=_empty_complete_scan_run(),
+            hosts=[],
+            findings=[],
+            knowledge=_kb(),
+            generated_at="2026-11-05T11:20:03Z",
+        )
+
+        expected = (GOLDEN_DIR / "report_scan_empty.md").read_text(encoding="utf-8")
+        assert rendered == expected
+
 
 class TestScanReportContent:
     def test_findings_section_summarises_severity_and_groups_templates(self) -> None:
@@ -321,6 +370,129 @@ class TestScanReportContent:
 
         assert "evidence" not in rendered.lower()
         assert "matched-at" not in rendered.lower()
+
+
+class TestRunKindDetection:
+    def test_scan_run_with_zero_findings_is_still_scan(self) -> None:
+        run = _empty_complete_scan_run()
+
+        assert classify_run_kind(run) == "scan"
+
+        rendered = render_markdown_report(
+            run=run,
+            hosts=[],
+            findings=[],
+            knowledge=_kb(),
+            generated_at="2026-11-05T11:20:03Z",
+        )
+
+        assert rendered.startswith("# Laporan Scan DAYSRA")
+        assert "## Temuan" in rendered
+        assert "| **Total Temuan** | 0 |" in rendered
+        assert NO_FINDINGS_SENTENCE in rendered
+        assert "### Penjelasan per Template" not in rendered
+        assert "## Template tanpa entri knowledge base" not in rendered
+
+    def test_recon_run_is_never_classified_as_scan_even_with_findings(self) -> None:
+        run = _complete_recon_run()
+
+        assert classify_run_kind(run) == "recon"
+
+        rendered = render_markdown_report(
+            run=run,
+            hosts=_complete_recon_hosts(),
+            findings=[_finding("f-not-recon", "tech-detect")],
+            knowledge=_kb(),
+            generated_at="2026-11-05T10:00:05Z",
+        )
+
+        assert rendered.startswith("# Laporan Reconnaissance DAYSRA")
+        assert "## Temuan" not in rendered
+
+    def test_run_without_tool_metadata_defaults_to_recon(self) -> None:
+        run = RunRecord(
+            run_id="01JTESTRECON000000000000003",
+            target="unknown.example.com",
+            scope_hash="hash_recon",
+            started_at="2026-11-05T10:10:00Z",
+            finished_at="2026-11-05T10:10:01Z",
+            status="complete",
+            tool_versions={},
+        )
+
+        assert classify_run_kind(run) == "recon"
+
+
+class TestEmptyScanReportContent:
+    def test_partial_scan_without_findings_keeps_scan_layout_and_warning(self) -> None:
+        rendered = render_markdown_report(
+            run=_empty_partial_scan_run(),
+            hosts=[],
+            findings=[],
+            knowledge=_kb(),
+            generated_at="2026-11-05T11:30:03Z",
+        )
+
+        assert rendered.startswith("# Laporan Scan DAYSRA")
+        assert "> [!WARNING]" in rendered
+        assert "**PERINGATAN: Run ini berstatus Parsial (Tidak Lengkap).**" in rendered
+        assert "| **Status** | **partial** |" in rendered
+        assert "| **Total Temuan** | 0 |" in rendered
+        for severity in ("critical", "high", "medium", "low", "info"):
+            assert f"| {severity} | 0 |" in rendered
+        assert NO_FINDINGS_SENTENCE in rendered
+        assert "### Penjelasan per Template" not in rendered
+        assert "## Template tanpa entri knowledge base" not in rendered
+
+
+class TestReportCliRunKindOutput:
+    def test_report_prints_scan_kind_and_run_id(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        run = _empty_complete_scan_run()
+        monkeypatch.setenv("DAYSRA_HOME", str(tmp_path / "data"))
+        db = Database(get_db_path())
+        with db.transaction() as conn:
+            db.upsert_run(
+                conn=conn,
+                run_id=run.run_id,
+                target=run.target,
+                started_at=run.started_at,
+                status=run.status,
+                tool_versions=run.tool_versions,
+            )
+
+        result = CliRunner().invoke(app, ["report", "--run", run.run_id])
+
+        assert result.exit_code == 0
+        assert result.stdout.startswith("# Laporan Scan DAYSRA")
+        assert f"Jenis run: scan | Run ID: {run.run_id}" in result.stderr
+
+    def test_report_prints_recon_kind_and_run_id(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        run = _complete_recon_run()
+        monkeypatch.setenv("DAYSRA_HOME", str(tmp_path / "data"))
+        db = Database(get_db_path())
+        with db.transaction() as conn:
+            db.upsert_run(
+                conn=conn,
+                run_id=run.run_id,
+                target=run.target,
+                started_at=run.started_at,
+                status=run.status,
+                tool_versions=run.tool_versions,
+            )
+
+        result = CliRunner().invoke(app, ["report", "--run", run.run_id])
+
+        assert result.exit_code == 0
+        assert result.stdout.startswith("# Laporan Reconnaissance DAYSRA")
+        assert f"Jenis run: recon | Run ID: {run.run_id}" in result.stderr
 
 
 class TestScanReportInjection:

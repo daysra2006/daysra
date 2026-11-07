@@ -128,15 +128,23 @@ def report(
 ) -> None:
     """Generate Markdown report for a reconnaissance or scan run."""
     from daysra.knowledge import KnowledgeError
-    from daysra.report.generator import generate_report_for_run
+    from daysra.report.generator import classify_run_kind, generate_report_for_run
     from daysra.store.db import Database, get_db_path
 
     db = Database(get_db_path())
     try:
-        report_md = generate_report_for_run(db, run_id=run)
+        run_record = db.get_run(run) if run else db.get_latest_run()
+        if run_record is None:
+            if run:
+                raise ValueError(f"Run dengan ID '{run}' tidak ditemukan di database.")
+            raise ValueError("Belum ada riwayat run di database.")
+        report_md = generate_report_for_run(db, run_id=run_record.run_id)
     except (KnowledgeError, ValueError) as err:
         typer.echo(f"Error: {err}", err=True)
         raise typer.Exit(1)
+
+    run_kind = classify_run_kind(run_record)
+    typer.echo(f"Jenis run: {run_kind} | Run ID: {run_record.run_id}", err=True)
 
     if output:
         output.write_text(report_md, encoding="utf-8")

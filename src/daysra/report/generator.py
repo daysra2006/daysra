@@ -102,6 +102,22 @@ REPORT_SEVERITY_ORDER: tuple[str, ...] = tuple(
     sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__)
 )
 
+SCAN_TOOL_NAMES: frozenset[str] = frozenset({"nuclei"})
+
+
+def classify_run_kind(run: RunRecord) -> str:
+    """Return ``"scan"`` when the run recorded nuclei, otherwise ``"recon"``.
+
+    The run kind comes only from tool metadata already stored on the run row
+    (``tool_versions``), never from the presence of findings. A scan run with
+    zero findings therefore still gets the scan report layout.
+    """
+    tool_names = {str(name).strip().lower() for name in run.tool_versions}
+    if tool_names & SCAN_TOOL_NAMES:
+        return "scan"
+    return "recon"
+
+
 SCAN_REPORT_TEMPLATE = """# Laporan Scan DAYSRA
 
 {% if run.status == "partial" %}
@@ -182,9 +198,6 @@ SCAN_REPORT_TEMPLATE = """# Laporan Scan DAYSRA
 - dan {{ explanation.matched_at | length - 20 }} lainnya
 {% endif %}
 {% endfor %}
-{% else %}
-*Tidak ada temuan pada run ini.*
-{% endif %}
 
 ## Template tanpa entri knowledge base
 
@@ -196,6 +209,9 @@ Template berikut memakai fallback generik. Tambahkan entri di direktori `knowled
 {% endfor %}
 {% else %}
 *Semua template pada run ini memiliki entri knowledge base.*
+{% endif %}
+{% else %}
+Tidak ada temuan dari template yang dijalankan. Ini BUKAN jaminan bahwa target aman: hanya template yang dipilih yang diperiksa.
 {% endif %}
 
 ---
@@ -284,8 +300,9 @@ def render_markdown_report(
 ) -> str:
     """Render a GitHub-Flavored Markdown report from SQLite records using Jinja2.
 
-    Runs without findings keep the reconnaissance report layout byte-for-byte.
-    Runs with findings (scan runs) render the findings section using the same
+    The layout is chosen from the run's stored tool metadata: runs that recorded
+    nuclei get the scan layout (even with zero findings), all other runs keep
+    the reconnaissance layout byte-for-byte. Scan findings use the same
     deterministic explainer as the terminal.
     """
     if generated_at is None:
@@ -309,10 +326,18 @@ def render_markdown_report(
     env.filters["sanitize_cell"] = sanitize_table_cell
     env.filters["sanitize_text"] = sanitize_inline_text
 
-    if findings:
-        if knowledge is None:
-            knowledge = load_knowledge_base()
-        explanations = build_explanations(findings, knowledge)
+    if classify_run_kind(run) == "scan":
+        explanations = []
+        fallback_template_ids: list[str] = []
+        if findings:
+            if knowledge is None:
+                knowledge = load_knowledge_base()
+            explanations = build_explanations(findings, knowledge)
+            fallback_template_ids = [
+                explanation.template_id
+                for explanation in explanations
+                if explanation.is_fallback
+            ]
         severity_counts = Counter(f.severity.strip().lower() for f in findings)
         severity_rows = [
             (severity, severity_counts.get(severity, 0)) for severity in REPORT_SEVERITY_ORDER
@@ -327,11 +352,7 @@ def render_markdown_report(
             findings=findings,
             explanations=explanations,
             severity_counts=severity_rows,
-            fallback_template_ids=[
-                explanation.template_id
-                for explanation in explanations
-                if explanation.is_fallback
-            ],
+            fallback_template_ids=fallback_template_ids,
             generated_at=generated_at,
         )
     else:
@@ -382,6 +403,8 @@ __all__ = [
     "CONTROL_SEQUENCE",
     "REPORT_SEVERITY_ORDER",
     "SCAN_REPORT_TEMPLATE",
+    "SCAN_TOOL_NAMES",
+    "classify_run_kind",
     "generate_report_for_run",
     "render_markdown_report",
     "sanitize_inline_code",
