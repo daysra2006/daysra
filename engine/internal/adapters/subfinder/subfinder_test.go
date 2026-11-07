@@ -13,33 +13,50 @@ func TestBuildArgs(t *testing.T) {
 		name     string
 		target   string
 		maxRate  int
-		timeout  int
 		wantArgs []string
 	}{
 		{
 			name:     "default options",
 			target:   "example.com",
 			maxRate:  0,
-			timeout:  0,
-			wantArgs: []string{"-d", "example.com", "-silent", "-oJ", "-cs"},
+			wantArgs: []string{"-d", "example.com", "-silent", "-oJ", "-cs", "-timeout", "30"},
 		},
 		{
-			name:     "with max rate and timeout",
+			name:     "with max rate",
 			target:   "example.com",
 			maxRate:  50,
-			timeout:  300,
-			wantArgs: []string{"-d", "example.com", "-silent", "-oJ", "-cs", "-rl", "50", "-timeout", "300"},
+			wantArgs: []string{"-d", "example.com", "-silent", "-oJ", "-cs", "-timeout", "30", "-rl", "50"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildArgs(tt.target, tt.maxRate, tt.timeout)
+			got := BuildArgs(tt.target, tt.maxRate)
 			if !reflect.DeepEqual(got, tt.wantArgs) {
 				t.Errorf("BuildArgs = %v, want %v", got, tt.wantArgs)
 			}
 		})
 	}
+}
+
+func TestBuildArgsUsesPerRequestTimeoutConstant(t *testing.T) {
+	if RequestTimeout != 30 {
+		t.Errorf("RequestTimeout = %d, want 30 (subfinder v2.17.0 default)", RequestTimeout)
+	}
+	args := BuildArgs("example.com", 50)
+	got := flagValue(args, "-timeout")
+	if got != "30" {
+		t.Errorf("-timeout = %q, want %q", got, "30")
+	}
+}
+
+func flagValue(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func TestParseLine(t *testing.T) {

@@ -19,6 +19,11 @@ import (
 // ExpectedVersion is the pinned fixture version of Subfinder.
 const ExpectedVersion = "v2.17.0"
 
+// RequestTimeout is the per-request timeout in seconds passed to subfinder's -timeout flag.
+// It matches the verified default of subfinder v2.17.0 and is intentionally independent
+// of scope.Timeout, which bounds the whole recon stage instead.
+const RequestTimeout = 30
+
 var versionRegex = regexp.MustCompile(`(?i)v?\d+\.\d+(?:\.\d+)?`)
 
 // Entry represents a single JSON object produced by Subfinder with -oJ -cs.
@@ -32,19 +37,18 @@ type Entry struct {
 }
 
 // BuildArgs constructs the argument array for Subfinder subprocess execution.
-func BuildArgs(target string, maxRate, timeout int) []string {
+// The -timeout flag always uses the per-request RequestTimeout constant, never scope.Timeout.
+func BuildArgs(target string, maxRate int) []string {
 	args := []string{
 		"-d", target,
 		"-silent",
 		"-oJ",
 		"-cs",
+		"-timeout", strconv.Itoa(RequestTimeout),
 	}
 
 	if maxRate > 0 {
 		args = append(args, "-rl", strconv.Itoa(maxRate))
-	}
-	if timeout > 0 {
-		args = append(args, "-timeout", strconv.Itoa(timeout))
 	}
 
 	return args

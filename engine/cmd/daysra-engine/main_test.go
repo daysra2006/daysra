@@ -12,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"daysra-engine/internal/adapters/httpx"
+	"daysra-engine/internal/adapters/nuclei"
+	"daysra-engine/internal/adapters/subfinder"
 )
 
 func TestMainVersion(t *testing.T) {
@@ -142,6 +146,11 @@ func TestReconFakeSubfinderProcess(t *testing.T) {
 		}
 	}
 
+	if mode == "record-args" {
+		recordHelperArgs(args)
+		os.Exit(0)
+	}
+
 	switch mode {
 	case "normal":
 		os.Stderr.WriteString("[INF] Enumerating subdomains for target\n")
@@ -256,6 +265,14 @@ func parseEvents(t *testing.T, output string, expectedRunID string) []eventRecor
 		events = append(events, ev)
 	}
 	return events
+}
+
+func recordHelperArgs(args []string) {
+	path := os.Getenv("FAKE_ARGS_FILE")
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, []byte(strings.Join(args, "\n")), 0600)
 }
 
 func TestReconNormalOutput(t *testing.T) {
@@ -640,6 +657,11 @@ func TestProbeFakeHttpxProcess(t *testing.T) {
 				os.Exit(0)
 			}
 		}
+	}
+
+	if mode == "record-args" {
+		recordHelperArgs(args)
+		os.Exit(0)
 	}
 
 	switch mode {
@@ -1451,7 +1473,15 @@ func TestScanFakeNucleiProcess(t *testing.T) {
 		}
 	}
 
+	if mode == "record-args" {
+		recordHelperArgs(args)
+		os.Exit(0)
+	}
+
 	switch mode {
+	case "timeout":
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
 	case "derived":
 		data, err := os.ReadFile("../../../tests/fixtures/tools/nuclei/v3.11.1/derived/output.jsonl")
 		if err != nil {
@@ -1854,5 +1884,148 @@ func TestScan_StdinTokenExceeds4MB_FailsGracefully(t *testing.T) {
 	}
 	if strings.Contains(stdoutBuf.String(), `"type":"run_end"`) {
 		t.Errorf("expected no run_end emitted when stdin fails before run_start, got: %s", stdoutBuf.String())
+	}
+}
+
+func recordedFlagValue(t *testing.T, path, flag string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read recorded args %s: %v", path, err)
+	}
+	args := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	t.Fatalf("flag %q not found in recorded args: %v", flag, args)
+	return ""
+}
+
+// TestToolTimeoutArgumentNotFromScope proves requirement (a): the scope timeout value
+// must never be forwarded as the tool's per-request -timeout argument.
+func TestToolTimeoutArgumentNotFromScope(t *testing.T) {
+	const scopeTimeout = 37
+
+	t.Run("recon", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, scopeTimeout)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeSubfinder(t, "record-args")
+		runID := "01JTESTTIMEOUTRECON0000000"
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIO(context.Background(), []string{
+			"recon", "--target", "example.com", "--scope", scopePath,
+			"--run-id", runID, "--subfinder-bin", fakeBin,
+		}, &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("recon exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+
+		got := recordedFlagValue(t, argsFile, "-timeout")
+		if want := fmt.Sprintf("%d", subfinder.RequestTimeout); got != want {
+			t.Errorf("recon -timeout = %q, want adapter constant %q", got, want)
+		}
+		if got == fmt.Sprintf("%d", scopeTimeout) {
+			t.Errorf("recon -timeout leaked scope.Timeout %d", scopeTimeout)
+		}
+	})
+
+	t.Run("probe", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, scopeTimeout)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeHttpx(t, "record-args")
+		runID := "01JTESTTIMEOUTPROBE0000000"
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIOStdin(context.Background(), []string{
+			"probe", "--scope", scopePath, "--run-id", runID, "--httpx-bin", fakeBin,
+		}, strings.NewReader("example.com\n"), &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("probe exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+
+		got := recordedFlagValue(t, argsFile, "-timeout")
+		if want := fmt.Sprintf("%d", httpx.RequestTimeout); got != want {
+			t.Errorf("probe -timeout = %q, want adapter constant %q", got, want)
+		}
+		if got == fmt.Sprintf("%d", scopeTimeout) {
+			t.Errorf("probe -timeout leaked scope.Timeout %d", scopeTimeout)
+		}
+	})
+
+	t.Run("scan", func(t *testing.T) {
+		scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, scopeTimeout)
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		t.Setenv("FAKE_ARGS_FILE", argsFile)
+		fakeBin := createFakeNuclei(t, "record-args")
+		runID := "01JTESTTIMEOUTSCAN00000000"
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		code := runWithIOStdin(context.Background(), []string{
+			"scan", "--scope", scopePath, "--run-id", runID, "--nuclei-bin", fakeBin,
+		}, strings.NewReader("http://example.com\n"), &stdoutBuf, &stderrBuf)
+		if code != 0 {
+			t.Fatalf("scan exit code = %d, want 0; stderr: %s", code, stderrBuf.String())
+		}
+
+		got := recordedFlagValue(t, argsFile, "-timeout")
+		if want := fmt.Sprintf("%d", nuclei.RequestTimeout); got != want {
+			t.Errorf("scan -timeout = %q, want adapter constant %q", got, want)
+		}
+		if got == fmt.Sprintf("%d", scopeTimeout) {
+			t.Errorf("scan -timeout leaked scope.Timeout %d", scopeTimeout)
+		}
+	})
+}
+
+// TestScanTimeoutIndependentOfURLCount proves requirement (b): the total scan stage
+// timeout is scope.Timeout regardless of how many URLs are scanned.
+func TestScanTimeoutIndependentOfURLCount(t *testing.T) {
+	scopePath := createTestScope(t, []string{"example.com", "*.example.com"}, nil, 1)
+	fakeBin := createFakeNuclei(t, "timeout")
+
+	tests := []struct {
+		name  string
+		input string
+		runID string
+	}{
+		{"one url", "http://example.com\n", "01JTESTSCANTIMEOUTONE0000"},
+		{"twenty urls", strings.Repeat("http://example.com\n", 20), "01JTESTSCANTIMEOUTMANY000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdoutBuf, stderrBuf bytes.Buffer
+			start := time.Now()
+			code := runWithIOStdin(context.Background(), []string{
+				"scan", "--scope", scopePath, "--run-id", tt.runID, "--nuclei-bin", fakeBin,
+			}, strings.NewReader(tt.input), &stdoutBuf, &stderrBuf)
+			elapsed := time.Since(start)
+
+			if code != 4 {
+				t.Errorf("run(scan) exit code = %d, want 4 (partial on stage timeout)", code)
+			}
+			if elapsed > 2500*time.Millisecond {
+				t.Errorf("scan timeout depended on URL count: elapsed %v for %q", elapsed, tt.name)
+			}
+
+			events := parseEvents(t, stdoutBuf.String(), tt.runID)
+			var runEndEvent *eventRecord
+			for i := range events {
+				if events[i].Type == "run_end" {
+					runEndEvent = &events[i]
+				}
+			}
+			if runEndEvent == nil {
+				t.Fatal("missing run_end event on timeout")
+			}
+			if runEndEvent.Data["status"] != "partial" {
+				t.Errorf("run_end status = %v, want partial", runEndEvent.Data["status"])
+			}
+		})
 	}
 }
