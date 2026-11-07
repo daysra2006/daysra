@@ -10,7 +10,9 @@ from rich.table import Table
 from rich.text import Text
 
 from daysra.core.sanitizer import sanitize_terminal_text
-from daysra.store.db import HostObsRecord, HttpObsRecord, RunRecord
+from daysra.store.db import FindingRecord, HostObsRecord, HttpObsRecord, RunRecord
+
+SEVERITY_ORDER: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
 
 # Backward-compatible internal alias
 _sanitize_terminal_text = sanitize_terminal_text
@@ -202,4 +204,93 @@ def render_recon_summary(
         console.print(f"[dim]Gunakan 'daysra report --run {safe_run_id}' untuk melihat daftar lengkap.[/dim]")
 
 
-__all__ = ["render_recon_summary"]
+def render_scan_summary(
+    run: RunRecord,
+    findings: Sequence[FindingRecord],
+    console: Console | None = None,
+) -> None:
+    """Render the scan result summary: per-severity counts and a findings table.
+
+    Every field that originates from the target or the tool is sanitized and
+    rendered through ``Text`` so Rich markup is never interpreted.
+    """
+    console = console or Console()
+
+    status_text = Text()
+    if run.status == "complete":
+        status_text.append("✓ Selesai (Complete)", style="bold green")
+    elif run.status == "partial":
+        status_text.append("⚠ Parsial (Partial - Hasil Tidak Lengkap)", style="bold yellow")
+    elif run.status == "cancelled":
+        status_text.append("✖ Dibatalkan (Cancelled)", style="bold red")
+    elif run.status == "failed":
+        status_text.append("✖ Gagal (Failed)", style="bold red")
+    else:
+        status_text.append("✖ Status: ", style="bold red")
+        status_text.append(_sanitize_terminal_text(run.status))
+
+    meta_table = Table.grid(padding=(0, 2))
+    meta_table.add_column(style="bold")
+    meta_table.add_column()
+    meta_table.add_row("Target:", Text(_sanitize_terminal_text(run.target) or "-"))
+    meta_table.add_row("Run ID:", Text(_sanitize_terminal_text(run.run_id)))
+    meta_table.add_row("Status:", status_text)
+    meta_table.add_row("Total Temuan:", str(len(findings)))
+
+    console.print()
+    console.print(Panel(meta_table, title="[bold]Ringkasan Scan[/bold]", border_style="cyan"))
+
+    if run.status in {"partial", "cancelled"}:
+        console.print(
+            Panel(
+                "[bold yellow]PERINGATAN:[/bold yellow] Scan tidak selesai sempurna. "
+                "Temuan di bawah ini berasal dari hasil parsial.",
+                border_style="yellow",
+            )
+        )
+    elif run.status == "failed":
+        console.print(
+            Panel(
+                "[bold red]PERINGATAN:[/bold red] Scan mengalami kegagalan. "
+                "Temuan di bawah ini hanya yang berhasil diamati sebelum kegagalan.",
+                border_style="red",
+            )
+        )
+
+    severity_counts: Counter[str] = Counter(f.severity.strip().lower() for f in findings)
+    count_table = Table(title="Jumlah Temuan per Severity", border_style="blue")
+    count_table.add_column("Severity", style="bold")
+    count_table.add_column("Jumlah", justify="right", style="green")
+    for severity in SEVERITY_ORDER:
+        count_table.add_row(severity, str(severity_counts.get(severity, 0)))
+    for severity in sorted(set(severity_counts) - set(SEVERITY_ORDER)):
+        count_table.add_row(Text(_sanitize_terminal_text(severity)), str(severity_counts[severity]))
+    console.print(count_table)
+
+    if not findings:
+        console.print("[dim]Tidak ada temuan.[/dim]")
+        return
+
+    table = Table(
+        title=f"Temuan ({len(findings)})",
+        border_style="magenta",
+    )
+    table.add_column("Severity", style="bold")
+    table.add_column("Template ID", style="cyan")
+    table.add_column("Nama")
+    table.add_column("Matched At", style="dim")
+
+    for finding in findings:
+        # Text() does not parse Rich markup and sanitize_terminal_text removes
+        # ANSI/control sequences, so untrusted tool output cannot style the terminal.
+        table.add_row(
+            Text(_sanitize_terminal_text(finding.severity)),
+            Text(_sanitize_terminal_text(finding.template_id)),
+            Text(_sanitize_terminal_text(finding.name)),
+            Text(_sanitize_terminal_text(finding.matched_at)),
+        )
+
+    console.print(table)
+
+
+__all__ = ["SEVERITY_ORDER", "render_recon_summary", "render_scan_summary"]

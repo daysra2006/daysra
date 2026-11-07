@@ -585,6 +585,38 @@ class Database:
         finally:
             conn.close()
 
+    def get_latest_run_with_http_for_target(self, target: str) -> RunRecord | None:
+        """Return the newest run for a target that has at least one HTTP observation."""
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT r.run_id, r.target, r.scope_hash, r.started_at, r.finished_at,
+                       r.status, r.tool_versions
+                FROM runs r
+                WHERE r.target = ?
+                  AND EXISTS (SELECT 1 FROM http_obs h WHERE h.run_id = r.run_id)
+                ORDER BY r.started_at DESC, r.run_id DESC
+                LIMIT 1
+                """,
+                (target,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return RunRecord(
+                run_id=row["run_id"],
+                target=row["target"],
+                scope_hash=row["scope_hash"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+                status=row["status"],
+                tool_versions=json.loads(row["tool_versions"]),
+            )
+        finally:
+            conn.close()
+
     def get_hosts_for_run(self, run_id: str) -> list[HostObsRecord]:
         conn = self.connect()
         try:
@@ -738,6 +770,54 @@ class Database:
                     WHEN 'low' THEN 4
                     WHEN 'info' THEN 5
                     ELSE 6 END, f.name ASC, f.id ASC
+                """,
+                (run_id,),
+            )
+            rows = cur.fetchall()
+            return [
+                FindingRecord(
+                    id=r["id"],
+                    hostname=r["hostname"],
+                    template_id=r["template_id"],
+                    name=r["name"],
+                    severity=r["severity"],
+                    cve=json.loads(r["cve"]),
+                    matched_at=r["matched_at"],
+                    first_seen_run=r["first_seen_run"],
+                    last_seen_run=r["last_seen_run"],
+                    first_seen=r["first_seen"],
+                    last_seen=r["last_seen"],
+                    status=r["status"],
+                )
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_findings_for_run_by_severity(self, run_id: str) -> list[FindingRecord]:
+        """Read findings for a run ordered by severity rank and template_id.
+
+        Read-only and parameterized. The display layer relies on this order:
+        critical > high > medium > low > info, then template_id.
+        """
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT f.id, f.hostname, f.template_id, f.name, f.severity, f.cve,
+                                f.matched_at, f.first_seen_run, f.last_seen_run, f.first_seen,
+                                f.last_seen, f.status
+                FROM findings f
+                JOIN finding_obs fo ON f.id = fo.finding_id
+                WHERE fo.run_id = ?
+                ORDER BY CASE f.severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                    WHEN 'info' THEN 5
+                    ELSE 6 END, f.template_id ASC, f.id ASC
                 """,
                 (run_id,),
             )

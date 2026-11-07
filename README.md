@@ -69,7 +69,23 @@ daysra recon example.com --scope scope.yaml --no-probe
 
 Jika proses dihentikan menggunakan **Ctrl+C**, Daysra akan menghentikan proses anak secara rapi, menyimpan data sementara yang berhasil diamati dengan status `cancelled` (atau `partial` jika tahap probe terhenti), dan mengembalikan kode keluar yang sesuai.
 
-### 4. Buat Laporan Markdown (`daysra report`)
+### 4. Pindai Host Hidup (`daysra scan`)
+Jalankan pemindaian Nuclei terhadap URL host hidup dari hasil recon terbaru yang tersimpan di SQLite:
+
+```sh
+# Pindai URL host hidup dari run recon terbaru untuk domain
+daysra scan example.com --scope scope.yaml
+
+# Pilih run sumber tertentu dan tampilkan command engine yang dijalankan
+daysra scan example.com --scope scope.yaml --from-run <RUN_ID> --show-command
+
+# Tambahkan tag template Nuclei (default-login tetap butuh konfirmasi eksplisit)
+daysra scan example.com --scope scope.yaml --include-tags tech,exposure
+```
+
+Tanpa host hidup, Daysra menyuruh menjalankan `daysra recon example.com` lebih dulu dan tidak menjalankan engine. Jika `--include-tags` memuat `default-login`, Daysra meminta konfirmasi mengetik kata `default-login` pada terminal; tanpa konfirmasi tag itu dibuang. Flag `--accept-default-login` meneruskan tag tersebut tanpa bertanya.
+
+### 5. Buat Laporan Markdown (`daysra report`)
 Hasilkan laporan ringkas hasil recon dalam format Markdown:
 
 ```sh

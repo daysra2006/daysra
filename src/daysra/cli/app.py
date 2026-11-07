@@ -73,6 +73,46 @@ def recon(
 
 
 @app.command()
+def scan(
+    domain: Annotated[str, typer.Argument(help="Target domain whose live hosts will be scanned")],
+    scope: Annotated[str, typer.Option("--scope", help="Path to scope.yaml")] = "scope.yaml",
+    include_tags: Annotated[
+        str | None,
+        typer.Option("--include-tags", help="Comma-separated additional Nuclei template tags"),
+    ] = None,
+    accept_default_login: Annotated[
+        bool,
+        typer.Option(
+            "--accept-default-login",
+            help="Accept the default-login tag without an interactive confirmation",
+        ),
+    ] = False,
+    from_run: Annotated[
+        str | None,
+        typer.Option("--from-run", help="Use live URLs from this specific run ID"),
+    ] = None,
+    raw: Annotated[bool, typer.Option("--raw", help="Output raw JSONL events")] = False,
+    show_command: Annotated[
+        bool, typer.Option("--show-command", help="Display the engine command being executed")
+    ] = False,
+) -> None:
+    """Scan live HTTP hosts for findings using Nuclei within authorized scope."""
+    from daysra.cli.scan import run_scan
+
+    raise typer.Exit(
+        run_scan(
+            domain=domain,
+            scope=scope,
+            include_tags=include_tags,
+            accept_default_login=accept_default_login,
+            from_run=from_run,
+            raw=raw,
+            show_command=show_command,
+        )
+    )
+
+
+@app.command()
 def report(
     run: Annotated[
         str | None,
