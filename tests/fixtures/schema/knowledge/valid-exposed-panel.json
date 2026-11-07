@@ -1,0 +1,9 @@
+{
+  "template_id": "exposed-admin-panel",
+  "title": "Panel administrasi terpapar",
+  "meaning": "Endpoint panel administrasi dapat dijangkau dari jaringan yang dipindai.",
+  "impact": "Permukaan serangan bertambah bila akses tidak dibatasi dengan benar.",
+  "verify_steps": ["Pastikan endpoint memang milik scope", "Tinjau kontrol akses"],
+  "concept": "Kontrol akses administratif",
+  "lang": "id"
+}

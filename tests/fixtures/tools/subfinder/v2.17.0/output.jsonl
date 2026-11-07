@@ -1,0 +1,4 @@
+{"host":"api.example.com","input":"example.com","sources":["alienvault","crtsh"]}
+{"host":"admin.example.com","input":"example.com","sources":["virustotal"]}
+{"host":"mail.example.com","input":"example.com","sources":["hackertarget"],"ip":"192.0.2.1"}
+{"host":"dev.example.com","input":"example.com","source":"subfinder"}
