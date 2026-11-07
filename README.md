@@ -110,15 +110,61 @@ PYTHONPATH=src .venv/bin/python -c "from daysra.knowledge import load_knowledge_
 Jika `template_id` tidak punya entri, Daysra memakai fallback generik berdasarkan severity dan menandainya `[fallback generik]` di output. Entri yang tidak valid membuat `daysra scan` berhenti dengan error yang menyebut file dan field.
 
 ### 5. Buat Laporan Markdown (`daysra report`)
-Hasilkan laporan ringkas hasil recon dalam format Markdown:
+Hasilkan laporan ringkas hasil recon atau scan dalam format Markdown:
 
 ```sh
 # Laporan run terakhir yang dicetak ke terminal
 daysra report
 
-# Laporan untuk run ID tertentu
+# Laporan untuk run ID tertentu (recon atau scan)
 daysra report --run <RUN_ID>
 
 # Menyimpan laporan ke file
 daysra report -o laporan-recon.md
 ```
+
+#### Contoh laporan scan
+
+Untuk run yang memiliki temuan, laporan memuat seksi **Temuan**: jumlah per severity, penjelasan per `template_id` (dari knowledge base yang sama dengan terminal atau fallback generik), daftar `matched_at`, CVE dari tool, dan daftar template yang belum punya entri knowledge base. `evidence` tidak pernah dimasukkan ke laporan.
+
+```md
+# Laporan Scan DAYSRA
+
+## Ringkasan Run
+
+| Parameter | Nilai |
+| --- | --- |
+| **Target** | `example.com` |
+| **Status** | **complete** |
+| **Total Temuan** | 2 |
+
+> Daftar host yang dipindai tidak disimpan pada run scan ini. Lihat laporan reconnaissance untuk target yang sama.
+
+## Temuan
+
+### Jumlah Temuan per Severity
+
+| Severity | Jumlah |
+| --- | ---: |
+| critical | 0 |
+| high | 0 |
+| medium | 1 |
+| low | 0 |
+| info | 1 |
+
+### Penjelasan per Template
+
+#### `prometheus-metrics` — Prometheus Metrics - Detect (medium)
+
+**Apa ini:** Endpoint metrik Prometheus dapat diakses
+...
+**Matched At:**
+
+- https://metrics.example.com/metrics
+
+## Template tanpa entri knowledge base
+
+- `fingerprinthub-web-fingerprints`
+```
+
+Run recon tanpa temuan tetap memakai format laporan reconnaissance lama (ringkasan run, sebaran sumber, daftar subdomain, dan host hidup).
