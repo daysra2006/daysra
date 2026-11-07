@@ -9,8 +9,10 @@ from typing import Any
 
 import pytest
 from rich.console import Console
+from typer.testing import CliRunner
 
 import daysra.cli.scan as scan_module
+from daysra.cli.app import app
 from daysra.cli.scan import run_scan
 from daysra.cli.stages import StageResult
 from daysra.core.ulid import generate_ulid
@@ -601,6 +603,234 @@ class TestScanFailureState:
         latest_run = db.get_latest_run()
         assert latest_run is not None
         assert latest_run.status == "cancelled"
+
+
+class TestScanTargetPersistence:
+    def test_scan_run_stores_and_renders_normalized_target(
+        self,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db, target="example.com")
+        console = _recording_console()
+
+        exit_code = run_scan(domain="Example.COM.", scope=str(scope_file), console=console)
+
+        assert exit_code == 0
+        latest_run = db.get_latest_run()
+        assert latest_run is not None
+        assert latest_run.target == "example.com"
+        output = console.export_text()
+        assert "Target:" in output
+        assert "example.com" in output
+        assert "Target:  -" not in output
+
+    def test_from_run_matching_uses_the_same_target_normalization(
+        self,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, db = test_env
+        source_run = _seed_recon_run(db, target="example.com")
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="Example.COM.",
+            scope=str(scope_file),
+            from_run=source_run,
+            console=console,
+        )
+
+        assert exit_code == 0
+        assert "tidak cocok" not in console.export_text()
+
+
+class TestScanFromRunValidation:
+    def test_from_run_with_different_target_is_rejected_before_scan(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, db = test_env
+        source_run = _seed_recon_run(db, target="other.example.com")
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            from_run=source_run,
+            console=console,
+        )
+
+        assert exit_code != 0
+        output = console.export_text()
+        assert "tidak cocok" in output
+        assert "other.example.com" in output
+        assert _scan_calls(_read_engine_calls(tmp_path)) == []
+
+    def test_from_run_that_does_not_exist_is_rejected_before_scan(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, _ = test_env
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            from_run="01MISSINGRUN00000000000000",
+            console=console,
+        )
+
+        assert exit_code != 0
+        assert "tidak ditemukan" in console.export_text()
+        assert _scan_calls(_read_engine_calls(tmp_path)) == []
+
+
+class TestDefaultLoginVariants:
+    @pytest.mark.parametrize(
+        ("include_tags", "expected"),
+        [
+            ("default-login", None),
+            ("Default-Login", None),
+            (" default-login ", None),
+            ("tech, default-login", "tech"),
+            ("tech,DEFAULT-LOGIN,exposure", "tech,exposure"),
+            ("default-login,default-login", None),
+            (["tech", "default-login"], "tech"),
+            ("default-logins", "default-logins"),
+        ],
+    )
+    def test_non_tty_drops_every_default_login_variant(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+        include_tags: str | list[str],
+        expected: str | None,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=False))
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            include_tags=include_tags,
+            console=console,
+        )
+
+        assert exit_code == 0
+        scan_call = _scan_calls(_read_engine_calls(tmp_path))[0]
+        assert _include_tags(scan_call["args"]) == expected
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"),
+        [
+            ("default-login\n", "default-login"),
+            ("  default-login  \n", "default-login"),
+            ("Default-Login\n", None),
+            ("DEFAULT-LOGIN\n", None),
+            ("default-login extra\n", None),
+        ],
+    )
+    def test_interactive_confirmation_requires_the_exact_word(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+        answer: str,
+        expected: str | None,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=True, answer=answer))
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            include_tags="default-login",
+            console=console,
+        )
+
+        assert exit_code == 0
+        scan_call = _scan_calls(_read_engine_calls(tmp_path))[0]
+        assert _include_tags(scan_call["args"]) == expected
+
+    def test_accept_flag_keeps_every_variant(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=False))
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            include_tags="tech,DEFAULT-LOGIN,exposure",
+            accept_default_login=True,
+            console=console,
+        )
+
+        assert exit_code == 0
+        scan_call = _scan_calls(_read_engine_calls(tmp_path))[0]
+        assert _include_tags(scan_call["args"]) == "tech,DEFAULT-LOGIN,exposure"
+
+    def test_repeated_cli_options_are_combined(
+        self,
+        tmp_path: Path,
+        test_env: tuple[Path, Database],
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "scan",
+                "example.com",
+                "--scope",
+                str(scope_file),
+                "--include-tags",
+                "tech",
+                "--include-tags",
+                "default-login",
+                "--accept-default-login",
+            ],
+        )
+
+        assert result.exit_code == 0
+        scan_call = _scan_calls(_read_engine_calls(tmp_path))[0]
+        assert _include_tags(scan_call["args"]) == "tech,default-login"
+
+    def test_warning_does_not_echo_unsanitized_user_input(
+        self,
+        test_env: tuple[Path, Database],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scope_file, db = test_env
+        _seed_recon_run(db)
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=False))
+        console = _recording_console()
+
+        exit_code = run_scan(
+            domain="example.com",
+            scope=str(scope_file),
+            include_tags="default-login,\x1b[31m[bold red]evil",
+            console=console,
+        )
+
+        assert exit_code == 0
+        output = console.export_text()
+        assert "\x1b[31m" not in output
+        assert "[bold red]evil" not in output
 
 
 class TestScanOutputSecurity:

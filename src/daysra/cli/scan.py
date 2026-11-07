@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,16 +22,38 @@ from daysra.store.db import Database, get_db_path
 DEFAULT_LOGIN_TAG = "default-login"
 
 
-def _parse_include_tags(raw_tags: str | None) -> list[str]:
-    """Split a comma-separated --include-tags value, trimming blanks."""
-    if not raw_tags:
+def _parse_include_tags(raw_tags: str | Iterable[str] | None) -> list[str]:
+    """Normalize --include-tags values, including repeated options.
+
+    Every value is split on commas, each element is trimmed, empty elements are
+    ignored, and repeated options are combined in the order given.
+    """
+    if raw_tags is None:
         return []
+    raw_values = [raw_tags] if isinstance(raw_tags, str) else list(raw_tags)
     tags: list[str] = []
-    for raw_tag in raw_tags.split(","):
-        tag = raw_tag.strip()
-        if tag:
-            tags.append(tag)
+    for raw_value in raw_values:
+        for raw_tag in str(raw_value).split(","):
+            tag = raw_tag.strip()
+            if tag:
+                tags.append(tag)
     return tags
+
+
+def _normalize_target(domain: str) -> str:
+    """Normalize a target the way recon stores it (trim, lowercase, no trailing dot).
+
+    The Go engine additionally converts IDN labels to punycode. Python's built-in
+    IDNA codec is used as a best-effort fallback so the common ASCII case matches
+    exactly; invalid values are left to the engine's fail-closed preflight.
+    """
+    candidate = domain.strip().lower().removesuffix(".")
+    if not candidate:
+        return candidate
+    try:
+        return candidate.encode("idna").decode("ascii")
+    except UnicodeError:
+        return candidate
 
 
 def _contains_default_login(tags: list[str]) -> bool:
@@ -111,7 +134,7 @@ def _report_scope_error(
 def run_scan(
     domain: str,
     scope: str = "scope.yaml",
-    include_tags: str | None = None,
+    include_tags: str | Iterable[str] | None = None,
     accept_default_login: bool = False,
     from_run: str | None = None,
     raw: bool = False,
@@ -169,26 +192,34 @@ def run_scan(
 
     # 5. Select the source run and its live HTTP URLs from SQLite
     db = Database(get_db_path())
-    target_key = domain.strip().lower()
+    normalized_target = _normalize_target(domain)
 
     if from_run:
         source_run = db.get_run(from_run)
-    else:
-        source_run = db.get_latest_run_with_http_for_target(target_key)
-
-    if source_run is None:
-        if from_run:
+        if source_run is None:
             console.print(
                 f"[bold red]Error:[/bold red] Run sumber "
                 f"'{escape(sanitize_terminal_text(from_run))}' tidak ditemukan."
             )
-        else:
+            return 1
+        if _normalize_target(source_run.target) != normalized_target:
             console.print(
-                f"[bold red]Error:[/bold red] Tidak ada host hidup untuk "
-                f"'{escape(sanitize_terminal_text(domain))}'. "
-                f"Jalankan 'daysra recon {escape(sanitize_terminal_text(domain))}' "
-                "terlebih dahulu."
+                f"[bold red]Error:[/bold red] Run sumber "
+                f"'{escape(sanitize_terminal_text(from_run))}' memiliki target "
+                f"'{escape(sanitize_terminal_text(source_run.target))}' yang tidak cocok "
+                f"dengan domain '{escape(sanitize_terminal_text(domain))}'."
             )
+            return 1
+    else:
+        source_run = db.get_latest_run_with_http_for_target(normalized_target)
+
+    if source_run is None:
+        console.print(
+            f"[bold red]Error:[/bold red] Tidak ada host hidup untuk "
+            f"'{escape(sanitize_terminal_text(domain))}'. "
+            f"Jalankan 'daysra recon {escape(sanitize_terminal_text(domain))}' "
+            "terlebih dahulu."
+        )
         return 1
 
     http_obs = db.get_http_obs_for_run(source_run.run_id)
@@ -265,6 +296,14 @@ def run_scan(
 
     # 8. Ingest scan events as a new run (Python remains the sole SQLite writer)
     Ingestor(db=db, run_id=run_id).ingest_lines(scan_stage.lines)
+
+    # The Go scan stage has no --target flag and omits target from run_start.
+    # Python fills the scope-checked domain so the run row matches recon rows
+    # without fabricating any engine event. Prefer the source run's target,
+    # which recon already stored in the engine's canonical normalized form.
+    scan_target = _normalize_target(source_run.target) or normalized_target
+    with db.transaction() as conn:
+        db.upsert_run(conn=conn, run_id=run_id, target=scan_target, started_at="")
 
     scan_cancelled = scan_stage.cancelled
     scan_exit = scan_stage.exit_code

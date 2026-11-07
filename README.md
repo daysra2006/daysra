@@ -83,7 +83,7 @@ daysra scan example.com --scope scope.yaml --from-run <RUN_ID> --show-command
 daysra scan example.com --scope scope.yaml --include-tags tech,exposure
 ```
 
-Tanpa host hidup, Daysra menyuruh menjalankan `daysra recon example.com` lebih dulu dan tidak menjalankan engine. Jika `--include-tags` memuat `default-login`, Daysra meminta konfirmasi mengetik kata `default-login` pada terminal; tanpa konfirmasi tag itu dibuang. Flag `--accept-default-login` meneruskan tag tersebut tanpa bertanya.
+Tanpa host hidup, Daysra menyuruh menjalankan `daysra recon example.com` lebih dulu dan tidak menjalankan engine. Run scan disimpan dengan target domain yang sudah lolos preflight scope, dan `--from-run` ditolak bila target run sumber tidak sama dengan domain yang diminta. Jika `--include-tags` memuat `default-login`, Daysra meminta konfirmasi mengetik kata `default-login` pada terminal; tanpa konfirmasi tag itu dibuang. Flag `--accept-default-login` meneruskan tag tersebut tanpa bertanya.
 
 ### 5. Buat Laporan Markdown (`daysra report`)
 Hasilkan laporan ringkas hasil recon dalam format Markdown:

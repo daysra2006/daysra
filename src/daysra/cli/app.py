@@ -77,8 +77,11 @@ def scan(
     domain: Annotated[str, typer.Argument(help="Target domain whose live hosts will be scanned")],
     scope: Annotated[str, typer.Option("--scope", help="Path to scope.yaml")] = "scope.yaml",
     include_tags: Annotated[
-        str | None,
-        typer.Option("--include-tags", help="Comma-separated additional Nuclei template tags"),
+        list[str] | None,
+        typer.Option(
+            "--include-tags",
+            help="Comma-separated additional Nuclei template tags (may be repeated)",
+        ),
     ] = None,
     accept_default_login: Annotated[
         bool,
