@@ -57,6 +57,7 @@ Tanggal: 2026-11-05
 - [x] Langkah 2f: Python fail-closed untuk `matched_at`: URL yang tidak bisa di-parse tidak pernah disimpan mentah, event finding dilewati dan dicatat lewat mekanisme error baris ingestor, sementara event valid di sekitarnya tetap tersimpan
 - [x] Langkah 3: Penyimpanan Python di `daysra.store` (`findings`, `finding_obs`, migrasi `PRAGMA user_version = 3`, ingestor event `finding`, deduplikasi temuan)
 - [ ] Langkah 4: CLI `daysra scan DOMAIN`, Simple Mode temuan kerentanan, dan seksi temuan laporan Markdown
+  - [x] Langkah 4a: CLI `daysra scan` (preflight scope, URL host hidup dari SQLite, `run_stage`, ingest run baru, ringkasan temuan per severity)
 - [ ] Langkah 5: Penutup M3, pembaruan dokumentasi, dan verifikasi akhir suite pengujian
 
 ## Catatan M3
